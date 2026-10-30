@@ -420,6 +420,132 @@ static void test_linkwitz_and_headroom() {
   CHECK(crossover::effective_gain_db(c, crossover::ROLE_TWEETER, fs, no_boost) == 0.0f, "cuts do not raise gain");
 }
 
+static bool is_passthrough(const biquad::Coefficients &c) {
+  return c.b0 == 1.0 && c.b1 == 0.0 && c.b2 == 0.0 && c.a1 == 0.0 && c.a2 == 0.0;
+}
+
+static double largest_coefficient(const biquad::Coefficients &c) {
+  return std::fmax(std::fmax(std::fmax(std::fabs(c.b0), std::fabs(c.b1)), std::fmax(std::fabs(c.b2), std::fabs(c.a1))),
+                   std::fabs(c.a2));
+}
+
+// every band over the allowed setting ranges must fit Q5.27 (+-16) with some margin
+static void test_coefficients_fit_q5_27() {
+  static const float RATES[] = {44100.0f, 48000.0f, 96000.0f};
+  static const float FREQS[] = {20.0f, 50.0f, 200.0f, 1000.0f, 5000.0f, 12000.0f, 20000.0f};
+  static const float GAINS[] = {-15.0f, -6.0f, 6.0f, 15.0f};
+  static const float QS[] = {0.1f, 0.707f, 3.0f, 10.0f};
+  static const float LOW_FREQS[] = {15.0f, 30.0f, 60.0f, 120.0f, 200.0f};
+  static const float LOW_QS[] = {0.3f, 0.707f, 2.0f};
+  const crossover::LoudnessBoost max_boost{crossover::LOUDNESS_BASS_MAX_DB, crossover::LOUDNESS_TREBLE_MAX_DB};
+
+  double worst = 0.0;
+  auto check_chain = [&](const crossover::Settings &s, float fs) {
+    for (uint8_t role = 0; role < crossover::NUMBER_ROLES; role++) {
+      for (uint8_t band = 0; band < crossover::NUMBER_BANDS; band++) {
+        const double m = largest_coefficient(
+            crossover::band_coefficients(s, static_cast<crossover::DriverRole>(role), band, fs, max_boost));
+        if (m > worst) worst = m;
+      }
+    }
+  };
+
+  for (float fs : RATES) {
+    for (float f : FREQS) {
+      for (float g : GAINS) {
+        for (float q : QS) {
+          for (uint8_t type = 0; type < 3; type++) {
+            crossover::Settings s;
+            s.driver[crossover::ROLE_MID].gain_db = crossover::DRIVER_GAIN_MAX_DB;
+            s.driver[crossover::ROLE_MID].delay_mm = 50.0f;
+            s.driver[crossover::ROLE_MID].peq[0] = {f, g, q, static_cast<crossover::PeqType>(type)};
+            s.driver[crossover::ROLE_TWEETER].peq[0] = {f, g, q, static_cast<crossover::PeqType>(type)};
+            s.air_gain_db = (g > 0.0f) ? crossover::AIR_GAIN_MAX_DB : -crossover::AIR_GAIN_MAX_DB;
+            s.notch_frequency = std::fmax(f, crossover::NOTCH_FREQUENCY_MIN);
+            s.notch_gain_db = crossover::NOTCH_GAIN_MIN_DB;
+            s.notch_q = (q < crossover::NOTCH_Q_MIN) ? crossover::NOTCH_Q_MIN : q * 2.0f;
+            s.baffle_width_cm = crossover::BAFFLE_WIDTH_MIN_CM;
+            check_chain(s, fs);
+          }
+        }
+      }
+    }
+    for (float f0 : LOW_FREQS) {
+      for (float fp : LOW_FREQS) {
+        for (float q0 : LOW_QS) {
+          for (float qp : LOW_QS) {
+            crossover::Settings s;
+            s.linkwitz_f0 = f0;
+            s.linkwitz_fp = fp;
+            s.linkwitz_q0 = q0;
+            s.linkwitz_qp = qp;
+            s.subsonic_frequency = fp < crossover::SUBSONIC_FREQUENCY_MIN ? crossover::SUBSONIC_FREQUENCY_MIN : fp / 2.0f;
+            check_chain(s, fs);
+          }
+        }
+      }
+    }
+    for (uint8_t filter = 0; filter < crossover::NUMBER_FILTERS; filter++) {
+      for (float f : {crossover::FREQUENCY_MIN, 2500.0f, crossover::FREQUENCY_MAX}) {
+        crossover::Settings s;
+        s.filter = static_cast<crossover::CrossoverFilter>(filter);
+        s.frequency = f;
+        check_chain(s, fs);
+      }
+    }
+  }
+  CHECK(worst < 15.9, "largest coefficient %.3f must stay inside Q5.27", worst);
+}
+
+// the highest notch must still be below Nyquist at the lowest DSP rate
+static void test_notch_below_nyquist() {
+  const crossover::LoudnessBoost no_boost;
+  crossover::Settings s;
+  s.notch_frequency = crossover::NOTCH_FREQUENCY_MAX;
+  s.notch_gain_db = -6.0f;
+  const biquad::Coefficients c = crossover::band_coefficients(s, crossover::ROLE_TWEETER, crossover::BAND_NOTCH, 48000.0f, no_boost);
+  CHECK(!is_passthrough(c), "notch at %.0fHz is active at 48kHz", crossover::NOTCH_FREQUENCY_MAX);
+  CHECK(near(db(response(c, crossover::NOTCH_FREQUENCY_MAX, 48000.0)), -6.0, 0.1), "notch at max frequency cuts 6dB");
+}
+
+// the Linkwitz boost rises towards DC, the peak search must find it and compensation must cancel it
+static void test_linkwitz_peak_search() {
+  const crossover::LoudnessBoost no_boost;
+  for (float fs : {48000.0f, 96000.0f}) {
+    crossover::Settings s;
+    s.linkwitz_f0 = 60.0f;
+    s.linkwitz_q0 = 0.707f;
+    s.linkwitz_fp = 30.0f;
+    s.linkwitz_qp = 0.5f;
+    const double dc_gain = 20.0 * std::log10((60.0 / 30.0) * (60.0 / 30.0));
+    const float peak = crossover::chain_peak_db(s, crossover::ROLE_MID, fs, no_boost, false);
+    CHECK(near(peak, dc_gain, 0.5), "Linkwitz peak %.2fdB vs DC gain %.2fdB at %.0fHz", peak, dc_gain, fs);
+
+    s.driver[crossover::ROLE_MID].peq[0] = {1000.0f, 6.0f, 2.0f, crossover::PEQ_PEAKING};
+    s.headroom_compensation = true;
+    const float total = crossover::chain_peak_db(s, crossover::ROLE_MID, fs, no_boost, true);
+    CHECK(total <= 0.05f, "compensated Linkwitz chain peaks at %.2fdB at %.0fHz", total, fs);
+  }
+}
+
+// poles must stay inside the unit circle after rounding to Q5.27
+static void test_low_frequency_poles_stable_after_encoding() {
+  const crossover::LoudnessBoost no_boost;
+  crossover::Settings s;
+  s.subsonic_frequency = crossover::SUBSONIC_FREQUENCY_MIN;
+  s.linkwitz_f0 = crossover::LINKWITZ_FREQUENCY_MAX;
+  s.linkwitz_fp = crossover::LINKWITZ_FREQUENCY_MIN;
+  s.linkwitz_qp = crossover::LINKWITZ_Q_MAX;
+  for (uint8_t band : {crossover::BAND_SUBSONIC, crossover::BAND_LINKWITZ}) {
+    uint8_t bytes[biquad::ENCODED_SIZE];
+    biquad::encode(crossover::band_coefficients(s, crossover::ROLE_MID, band, 96000.0f, no_boost), bytes);
+    // A1 and A2 are stored negated
+    const double a1 = -double(int32_t(word(bytes, 3))) / 134217728.0;
+    const double a2 = -double(int32_t(word(bytes, 4))) / 134217728.0;
+    CHECK(a2 < 1.0 && std::fabs(a1) < 1.0 + a2, "band %d poles stable after encoding (a1 %.9f a2 %.9f)", band + 1, a1, a2);
+  }
+}
+
 int main() {
   test_lr4_2500hz_reference();
   test_crossover_responses();
@@ -432,6 +558,10 @@ int main() {
   test_loudness();
   test_speaker_compensation();
   test_linkwitz_and_headroom();
+  test_coefficients_fit_q5_27();
+  test_notch_below_nyquist();
+  test_linkwitz_peak_search();
+  test_low_frequency_poles_stable_after_encoding();
 
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
