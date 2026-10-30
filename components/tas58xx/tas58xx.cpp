@@ -1183,7 +1183,8 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
     case XO_PARAM_SUBSONIC_FREQUENCY:
       this->xover_.subsonic_frequency = clamp(value, 0.0f, crossover::SUBSONIC_FREQUENCY_MAX);
       ESP_LOGD(TAG, "Set Subsonic Filter: %.0fHz", this->xover_.subsonic_frequency);
-      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_SUBSONIC);
+      // poles close to the unit circle, a half written biquad can go unstable, so write under the safety mute
+      this->request_crossover_apply_(false);
       return;
 
     case XO_PARAM_BAFFLE_WIDTH:
@@ -1234,7 +1235,8 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
       (param == XO_PARAM_LINKWITZ_F0 ? this->xover_.linkwitz_f0 : this->xover_.linkwitz_fp) =
           clamp(value, 0.0f, crossover::LINKWITZ_FREQUENCY_MAX);
       ESP_LOGD(TAG, "Set Linkwitz Transform: f0 %.0fHz -> fp %.0fHz", this->xover_.linkwitz_f0, this->xover_.linkwitz_fp);
-      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_LINKWITZ);
+      // low frequency poles like the subsonic filter, write under the safety mute
+      this->request_crossover_apply_(false);
       return;
 
     case XO_PARAM_LINKWITZ_Q0:
@@ -1242,7 +1244,7 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
       (param == XO_PARAM_LINKWITZ_Q0 ? this->xover_.linkwitz_q0 : this->xover_.linkwitz_qp) =
           clamp(value, crossover::LINKWITZ_Q_MIN, crossover::LINKWITZ_Q_MAX);
       ESP_LOGD(TAG, "Set Linkwitz Transform: Q0 %.2f -> Qp %.2f", this->xover_.linkwitz_q0, this->xover_.linkwitz_qp);
-      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_LINKWITZ);
+      this->request_crossover_apply_(false);
       return;
 
     case XO_PARAM_MUTE: {
