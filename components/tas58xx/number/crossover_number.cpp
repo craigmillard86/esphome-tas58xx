@@ -14,6 +14,13 @@ void CrossoverNumber::setup() {
   if (!this->pref_.load(&value)) value = this->parent_->get_crossover_value(this->param_, this->role_, this->band_);
   this->publish_state(value);
   this->parent_->set_crossover_value(this->param_, this->role_, this->band_, value);
+
+  // after a reset to YAML values, show and save the new value
+  this->parent_->add_crossover_listener([this]() {
+    float current = this->parent_->get_crossover_value(this->param_, this->role_, this->band_);
+    this->publish_state(current);
+    this->pref_.save(&current);
+  });
 }
 
 void CrossoverNumber::dump_config() {

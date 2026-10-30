@@ -56,6 +56,9 @@ void Tas58xxComponent::setup() {
   this->safety_mute_ = true;
   // crossover is on by default, an EQ Mode select can still switch it Off
   this->tas58xx_eq_mode_ = this->configured_eq_mode_;
+  // crossover entities set up after this component, so these are still the YAML values
+  this->xover_defaults_ = this->xover_;
+  this->xover_default_tweeter_channel_ = this->xover_tweeter_channel_;
 #endif
   if (this->enable_pin_ != nullptr) {
     this->enable_pin_->setup();
@@ -336,7 +339,7 @@ void Tas58xxComponent::dump_config() {
               "    Tweeter Gain: %.1fdB  Mid Gain: %.1fdB\n"
               "    DSP Sample Rate: %.0fHz\n"
               "    Loudness: %s  Reference: %.1fdB",
-              CROSSOVER, FILTER_TEXT[this->xover_.filter], this->xover_.frequency,
+              CROSSOVER, FILTER_TEXT[this->xover_.filter], crossover::effective_frequency(this->xover_),
               LR_CHANNEL_TEXT[this->xover_tweeter_channel_],
               this->xover_.driver[crossover::ROLE_TWEETER].gain_db, this->xover_.driver[crossover::ROLE_MID].gain_db,
               this->xover_dsp_sample_rate_,
@@ -1025,6 +1028,9 @@ bool Tas58xxComponent::write_channel_gain_(Channels channel) {
   if ((channel == this->crossover_channel_(crossover::ROLE_TWEETER)) && this->tweeter_must_be_muted_()) {
     little_endian_9_23 = 0;
   }
+  // driver muted from Home Assistant, e.g. to measure the other driver on its own
+  const uint8_t role = (channel == this->crossover_channel_(crossover::ROLE_TWEETER)) ? crossover::ROLE_TWEETER : crossover::ROLE_MID;
+  if (this->xover_mute_[role]) little_endian_9_23 = 0;
 #endif
 
   return this->book_and_page_write_(TAS58XX_AUDIO_CTRL_BOOK, TAS58XX_CHANNEL_VOLUME_PAGE, TAS58XX_CHANNEL_VOLUME_SUBADDR[channel],
@@ -1060,6 +1066,12 @@ float Tas58xxComponent::get_crossover_value(CrossoverParam param, uint8_t role, 
     case XO_PARAM_NOTCH_GAIN:         return this->xover_.notch_gain_db;
     case XO_PARAM_NOTCH_Q:            return this->xover_.notch_q;
     case XO_PARAM_AIR_GAIN:           return this->xover_.air_gain_db;
+    case XO_PARAM_LINKWITZ_F0:        return this->xover_.linkwitz_f0;
+    case XO_PARAM_LINKWITZ_Q0:        return this->xover_.linkwitz_q0;
+    case XO_PARAM_LINKWITZ_FP:        return this->xover_.linkwitz_fp;
+    case XO_PARAM_LINKWITZ_QP:        return this->xover_.linkwitz_qp;
+    case XO_PARAM_MUTE:               return this->xover_mute_[role] ? 1.0f : 0.0f;
+    case XO_PARAM_HEADROOM_COMPENSATION: return this->xover_.headroom_compensation ? 1.0f : 0.0f;
   }
   return 0.0f;
 }
@@ -1088,7 +1100,11 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
 
     case XO_PARAM_FREQUENCY:
       this->xover_.frequency = clamp(value, crossover::FREQUENCY_MIN, crossover::FREQUENCY_MAX);
-      ESP_LOGD(TAG, "Set %s Frequency: %.0fHz", CROSSOVER, this->xover_.frequency);
+      if (this->xover_.frequency < this->xover_.frequency_min) {
+        ESP_LOGW(TAG, "%s Frequency %.0fHz is below the tweeter minimum, using %.0fHz", CROSSOVER,
+                 this->xover_.frequency, crossover::effective_frequency(this->xover_));
+      }
+      ESP_LOGD(TAG, "Set %s Frequency: %.0fHz", CROSSOVER, crossover::effective_frequency(this->xover_));
       this->crossover_sections_changed_();
       return;
 
@@ -1205,6 +1221,40 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
       this->xover_.air_gain_db = clamp(value, -crossover::AIR_GAIN_MAX_DB, crossover::AIR_GAIN_MAX_DB);
       ESP_LOGD(TAG, "Set Air Shelf Gain: %.1fdB", this->xover_.air_gain_db);
       this->crossover_band_changed_(crossover::ROLE_TWEETER, crossover::BAND_AIR);
+      return;
+
+    case XO_PARAM_LINKWITZ_F0:
+    case XO_PARAM_LINKWITZ_FP:
+      // 0 turns the Linkwitz transform off
+      (param == XO_PARAM_LINKWITZ_F0 ? this->xover_.linkwitz_f0 : this->xover_.linkwitz_fp) =
+          clamp(value, 0.0f, crossover::LINKWITZ_FREQUENCY_MAX);
+      ESP_LOGD(TAG, "Set Linkwitz Transform: f0 %.0fHz -> fp %.0fHz", this->xover_.linkwitz_f0, this->xover_.linkwitz_fp);
+      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_LINKWITZ);
+      return;
+
+    case XO_PARAM_LINKWITZ_Q0:
+    case XO_PARAM_LINKWITZ_QP:
+      (param == XO_PARAM_LINKWITZ_Q0 ? this->xover_.linkwitz_q0 : this->xover_.linkwitz_qp) =
+          clamp(value, crossover::LINKWITZ_Q_MIN, crossover::LINKWITZ_Q_MAX);
+      ESP_LOGD(TAG, "Set Linkwitz Transform: Q0 %.2f -> Qp %.2f", this->xover_.linkwitz_q0, this->xover_.linkwitz_qp);
+      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_LINKWITZ);
+      return;
+
+    case XO_PARAM_MUTE: {
+      this->xover_mute_[role] = (value >= 0.5f);
+      ESP_LOGD(TAG, "Set %s Mute: %s", ROLE_TEXT[role], ONOFF(this->xover_mute_[role]));
+      // channel gain registers need the I2S clock, before that the setup sequence writes them
+      if (this->loop_setup_stage_ > LR_VOLUME_SETUP && !this->write_channel_gain_(this->crossover_channel_(driver_role))) {
+        ESP_LOGW(TAG, "%s writing %s Mute", ERROR, ROLE_TEXT[role]);
+      }
+      return;
+    }
+
+    case XO_PARAM_HEADROOM_COMPENSATION:
+      this->xover_.headroom_compensation = (value >= 0.5f);
+      ESP_LOGD(TAG, "Set Headroom Compensation: %s", ONOFF(this->xover_.headroom_compensation));
+      this->crossover_band_changed_(crossover::ROLE_TWEETER, crossover::BAND_GAIN);
+      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_GAIN);
       return;
 
     default:
@@ -1346,7 +1396,7 @@ bool Tas58xxComponent::crossover_loop_() {
       this->xover_failures_ = 0;
       this->xover_step_ = XO_IDLE;
       ESP_LOGI(TAG, "%s applied: %s %.0fHz, tweeter on %s channel%s", CROSSOVER, FILTER_TEXT[this->xover_.filter],
-               this->xover_.frequency, LR_CHANNEL_TEXT[this->xover_tweeter_channel_],
+               crossover::effective_frequency(this->xover_), LR_CHANNEL_TEXT[this->xover_tweeter_channel_],
                (this->tas58xx_eq_mode_ == EQ_OFF) ? " (EQ Off: tweeter muted)" : "");
       // pick up any volume change made while applying
       this->update_loudness_();
@@ -1466,10 +1516,82 @@ void Tas58xxComponent::crossover_band_changed_(crossover::DriverRole role, uint8
   if (!this->xover_applied_) return;
 
   // gain, delay and PEQ bands cannot remove the tweeter high-pass, so write them while playing
-  if (!this->write_crossover_band_(role, band)) {
+  // with headroom compensation the gain trim follows the filter boost, so write it as well
+  bool ok = this->write_crossover_band_(role, band);
+  if (ok && this->xover_.headroom_compensation && band != crossover::BAND_GAIN) {
+    ok = this->write_crossover_band_(role, crossover::BAND_GAIN);
+  }
+  if (!ok) {
     ESP_LOGW(TAG, "%s writing %s band %d, reapplying", ERROR, ROLE_TEXT[role], band + 1);
     this->request_crossover_apply_(false);
   }
+}
+
+void Tas58xxComponent::write_gain_bands_if_compensated_() {
+  if (!this->xover_.headroom_compensation) return;
+  if (!this->write_crossover_band_(crossover::ROLE_TWEETER, crossover::BAND_GAIN) ||
+      !this->write_crossover_band_(crossover::ROLE_MID, crossover::BAND_GAIN)) {
+    ESP_LOGW(TAG, "%s writing gain trim, reapplying", ERROR);
+    this->request_crossover_apply_(false);
+  }
+}
+
+float Tas58xxComponent::get_crossover_peak_db(uint8_t role) {
+  if (role >= crossover::NUMBER_ROLES) return 0.0f;
+  return crossover::chain_peak_db(this->xover_, static_cast<crossover::DriverRole>(role), this->xover_dsp_sample_rate_,
+                                  this->xover_loudness_applied_, true);
+}
+
+void Tas58xxComponent::reset_crossover_settings() {
+  ESP_LOGI(TAG, "%s settings reset to YAML values", CROSSOVER);
+  this->xover_ = this->xover_defaults_;
+  this->xover_tweeter_channel_ = this->xover_default_tweeter_channel_;
+  // entities show and save the YAML values again
+  for (auto &listener : this->xover_listeners_) listener();
+  // tweeter channel may have changed, so rewrite everything under the safety mute
+  this->request_crossover_apply_(false);
+}
+
+void Tas58xxComponent::export_crossover_settings() {
+  // printed as a crossover: block that can be pasted into another cabinet's YAML
+  static constexpr const char* FILTER_YAML[crossover::NUMBER_FILTERS] = {"LR2", "LR4", "BW2", "BW4"};
+  static constexpr const char* PEQ_YAML[crossover::NUMBER_PEQ_TYPES] = {"PEAKING", "LOW_SHELF", "HIGH_SHELF"};
+  static constexpr const char* PLACEMENT_YAML[crossover::NUMBER_PLACEMENTS] = {"FREESTANDING", "NEAR_WALL", "CORNER"};
+  const crossover::Settings &s = this->xover_;
+  const crossover::DriverSettings &tw = s.driver[crossover::ROLE_TWEETER];
+  const crossover::DriverSettings &mid = s.driver[crossover::ROLE_MID];
+
+  ESP_LOGI(TAG, "%s export, paste under audio_dac: platform: tas58xx", CROSSOVER);
+  ESP_LOGI(TAG, "    crossover:");
+  ESP_LOGI(TAG, "      filter: %s", FILTER_YAML[s.filter]);
+  ESP_LOGI(TAG, "      frequency: %.0fHz", s.frequency);
+  ESP_LOGI(TAG, "      tweeter_min_frequency: %.0fHz", s.frequency_min);
+  ESP_LOGI(TAG, "      tweeter_channel: %s", this->xover_tweeter_channel_ == LEFT_CHANNEL ? "LEFT" : "RIGHT");
+  ESP_LOGI(TAG, "      dsp_sample_rate: %.0fHz", this->xover_dsp_sample_rate_);
+  ESP_LOGI(TAG, "      tweeter_gain: %.1fdB", tw.gain_db);
+  ESP_LOGI(TAG, "      mid_gain: %.1fdB", mid.gain_db);
+  ESP_LOGI(TAG, "      tweeter_invert: %s", TRUEFALSE(tw.invert));
+  ESP_LOGI(TAG, "      mid_invert: %s", TRUEFALSE(mid.invert));
+  ESP_LOGI(TAG, "      tweeter_delay: %.0f", tw.delay_mm);
+  ESP_LOGI(TAG, "      mid_delay: %.0f", mid.delay_mm);
+  const crossover::DriverSettings* drivers[crossover::NUMBER_ROLES] = {&tw, &mid};
+  const char* peq_keys[crossover::NUMBER_ROLES] = {"tweeter_peq", "mid_peq"};
+  for (uint8_t role = 0; role < crossover::NUMBER_ROLES; role++) {
+    ESP_LOGI(TAG, "      %s:", peq_keys[role]);
+    for (uint8_t band = 0; band < crossover::NUMBER_PEQ_BANDS; band++) {
+      const crossover::PeqBand &peq = drivers[role]->peq[band];
+      ESP_LOGI(TAG, "        - {frequency: %.0fHz, gain: %.1fdB, q: %.2f, type: %s}", peq.frequency, peq.gain_db, peq.q, PEQ_YAML[peq.type]);
+    }
+  }
+  ESP_LOGI(TAG, "      subsonic_frequency: %.0fHz", s.subsonic_frequency);
+  ESP_LOGI(TAG, "      baffle_width: %.0f", s.baffle_width_cm);
+  ESP_LOGI(TAG, "      baffle_placement: %s", PLACEMENT_YAML[s.baffle_placement]);
+  ESP_LOGI(TAG, "      tweeter_notch: {frequency: %.0fHz, gain: %.1fdB, q: %.1f}", s.notch_frequency, s.notch_gain_db, s.notch_q);
+  ESP_LOGI(TAG, "      air_gain: %.1fdB", s.air_gain_db);
+  ESP_LOGI(TAG, "      linkwitz: {f0: %.0fHz, q0: %.2f, fp: %.0fHz, qp: %.2f}", s.linkwitz_f0, s.linkwitz_q0, s.linkwitz_fp, s.linkwitz_qp);
+  ESP_LOGI(TAG, "      headroom_compensation: %s", TRUEFALSE(s.headroom_compensation));
+  ESP_LOGI(TAG, "      loudness: %s", TRUEFALSE(s.loudness));
+  ESP_LOGI(TAG, "      loudness_reference: %.0fdB", s.loudness_reference_db);
 }
 
 void Tas58xxComponent::crossover_sections_changed_() {
@@ -1490,6 +1612,7 @@ void Tas58xxComponent::crossover_sections_changed_() {
       }
     }
   }
+  this->write_gain_bands_if_compensated_();
 }
 
 void Tas58xxComponent::update_loudness_() {
@@ -1506,7 +1629,9 @@ void Tas58xxComponent::update_loudness_() {
       !this->write_crossover_band_(crossover::ROLE_TWEETER, crossover::BAND_LOUDNESS_TREBLE)) {
     ESP_LOGW(TAG, "%s writing Loudness, reapplying", ERROR);
     this->request_crossover_apply_(false);
+    return;
   }
+  this->write_gain_bands_if_compensated_();
 }
 
 bool Tas58xxComponent::book_and_page_block_(uint8_t book, uint8_t page, uint8_t sub_addr, uint8_t* data, uint16_t number_bytes, bool read) {

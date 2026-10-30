@@ -16,6 +16,13 @@ void CrossoverSelect::setup() {
   }
   this->publish_state(restored_index);
   this->parent_->set_crossover_value(this->param_, this->role_, this->band_, static_cast<float>(restored_index));
+
+  // after a reset to YAML values, show and save the new value
+  this->parent_->add_crossover_listener([this]() {
+    size_t current = static_cast<size_t>(this->parent_->get_crossover_value(this->param_, this->role_, this->band_));
+    this->publish_state(current);
+    this->pref_.save(&current);
+  });
 }
 
 void CrossoverSelect::dump_config() {

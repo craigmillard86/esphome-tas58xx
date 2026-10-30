@@ -25,6 +25,10 @@ CROSSOVER_SWITCHES = {
     "tweeter_invert": ("XO_PARAM_INVERT", ROLE_TWEETER, "mdi:swap-vertical"),
     "mid_invert": ("XO_PARAM_INVERT", ROLE_MID, "mdi:swap-vertical"),
     "loudness": ("XO_PARAM_LOUDNESS", ROLE_TWEETER, "mdi:volume-plus"),
+    # mute one driver to measure the other, always off at boot
+    "tweeter_mute": ("XO_PARAM_MUTE", ROLE_TWEETER, "mdi:volume-off"),
+    "mid_mute": ("XO_PARAM_MUTE", ROLE_MID, "mdi:volume-off"),
+    "headroom_compensation": ("XO_PARAM_HEADROOM_COMPENSATION", ROLE_TWEETER, "mdi:arrow-collapse-vertical"),
 }
 # EnableEqSwitch = tas58xx_ns.class_("EnableEqSwitch", switch.Switch , cg.Component)
 

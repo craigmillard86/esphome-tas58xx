@@ -63,6 +63,7 @@ from ..audio_dac import (
     ROLE_TWEETER,
     Tas58xxComponent,
     tas58xx_ns,
+    crossover_tweeter_min_frequency,
     validate_crossover_entities,
 )
 
@@ -124,6 +125,11 @@ CROSSOVER_NUMBERS = {
     "tweeter_notch_gain": ("XO_PARAM_NOTCH_GAIN", ROLE_TWEETER, 0, -24, 0, 0.5, UNIT_DECIBEL, DEVICE_CLASS_SOUND_PRESSURE, ICON_TUNE),
     "tweeter_notch_q": ("XO_PARAM_NOTCH_Q", ROLE_TWEETER, 0, 0.5, 20, 0.1, None, None, ICON_TUNE),
     "air_gain": ("XO_PARAM_AIR_GAIN", ROLE_TWEETER, 0, -6, 6, 0.5, UNIT_DECIBEL, DEVICE_CLASS_SOUND_PRESSURE, ICON_TUNE),
+    # Linkwitz transform on the mid, f0 or fp 0 turns it off
+    "linkwitz_f0": ("XO_PARAM_LINKWITZ_F0", ROLE_MID, 0, 0, 200, 1, UNIT_HERTZ, DEVICE_CLASS_FREQUENCY, ICON_SINE_WAVE),
+    "linkwitz_q0": ("XO_PARAM_LINKWITZ_Q0", ROLE_MID, 0, 0.3, 2, 0.01, None, None, ICON_TUNE),
+    "linkwitz_fp": ("XO_PARAM_LINKWITZ_FP", ROLE_MID, 0, 0, 200, 1, UNIT_HERTZ, DEVICE_CLASS_FREQUENCY, ICON_SINE_WAVE),
+    "linkwitz_qp": ("XO_PARAM_LINKWITZ_QP", ROLE_MID, 0, 0.3, 2, 0.01, None, None, ICON_TUNE),
 }
 for _role, _prefix in ((ROLE_TWEETER, "tweeter"), (ROLE_MID, "mid")):
     for _band in range(NUMBER_PEQ_BANDS):
@@ -767,6 +773,8 @@ async def to_code(config):
 
     for key, (param, role, band, min_value, max_value, step, *_) in CROSSOVER_NUMBERS.items():
         if crossover_config := config.get(key):
+            if key == "crossover_frequency":
+                min_value = crossover_tweeter_min_frequency()
             n = await number.new_number(crossover_config, min_value=min_value, max_value=max_value, step=step)
             await cg.register_component(n, crossover_config)
             await cg.register_parented(n, tas58xx_component)

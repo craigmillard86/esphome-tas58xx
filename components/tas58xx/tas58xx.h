@@ -12,6 +12,8 @@
 
 #ifdef USE_TAS58XX_EQ_CROSSOVER
 #include "tas58xx_crossover.h"
+#include <functional>
+#include <vector>
 #endif
 
 #ifdef USE_TAS58XX_BINARY_SENSOR
@@ -79,6 +81,14 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
     this->xover_.notch_q = notch_q;
     this->xover_.air_gain_db = air_gain_db;
   }
+  void config_crossover_frequency_min(float frequency) { this->xover_.frequency_min = frequency; }
+  void config_crossover_linkwitz(float f0, float q0, float fp, float qp) {
+    this->xover_.linkwitz_f0 = f0;
+    this->xover_.linkwitz_q0 = q0;
+    this->xover_.linkwitz_fp = fp;
+    this->xover_.linkwitz_qp = qp;
+  }
+  void config_crossover_headroom_compensation(bool enabled) { this->xover_.headroom_compensation = enabled; }
   void config_crossover_loudness(bool enabled, float reference_db) {
     this->xover_.loudness = enabled;
     this->xover_.loudness_reference_db = reference_db;
@@ -131,6 +141,16 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
   // role is crossover::DriverRole and band is the PEQ band index where relevant
   float get_crossover_value(CrossoverParam param, uint8_t role, uint8_t band);
   void set_crossover_value(CrossoverParam param, uint8_t role, uint8_t band, float value);
+
+  // crossover entities register here so they show and save values changed by 'reset_crossover_settings'
+  void add_crossover_listener(std::function<void()> &&listener) { this->xover_listeners_.push_back(std::move(listener)); }
+
+  // used by peak gain sensors: highest gain of a driver's DSP chain from 20Hz to 20kHz
+  float get_crossover_peak_db(uint8_t role);
+
+  // used by crossover buttons
+  void export_crossover_settings();
+  void reset_crossover_settings();
   #endif
 
   bool is_muted() override { return this->is_muted_; }
@@ -197,6 +217,7 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
    void crossover_band_changed_(crossover::DriverRole role, uint8_t band);
    void crossover_sections_changed_();
    void update_loudness_();
+   void write_gain_bands_if_compensated_();
 #endif
 
    // manage faults
@@ -315,6 +336,11 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
    uint8_t xover_wait_loops_{0};
    uint16_t xover_failures_{0};
    uint32_t xover_last_wait_log_{0};
+
+   bool xover_mute_[crossover::NUMBER_ROLES]{false, false};  // solo / mute for measuring, never restored at boot
+   crossover::Settings xover_defaults_;                      // YAML values, used by reset
+   Channels xover_default_tweeter_channel_{LEFT_CHANNEL};
+   std::vector<std::function<void()>> xover_listeners_;
 #endif
 };
 

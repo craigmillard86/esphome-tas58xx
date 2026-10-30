@@ -53,6 +53,13 @@ CONF_BAFFLE_WIDTH = "baffle_width"
 CONF_BAFFLE_PLACEMENT = "baffle_placement"
 CONF_TWEETER_NOTCH = "tweeter_notch"
 CONF_AIR_GAIN = "air_gain"
+CONF_TWEETER_MIN_FREQUENCY = "tweeter_min_frequency"
+CONF_LINKWITZ = "linkwitz"
+CONF_F0 = "f0"
+CONF_Q0 = "q0"
+CONF_FP = "fp"
+CONF_QP = "qp"
+CONF_HEADROOM_COMPENSATION = "headroom_compensation"
 
 # used for looking through CORE.config to derive eq configuration
 NUMBER_COMPONENT= "number"
@@ -149,10 +156,27 @@ NOTCH_SCHEMA = cv.Schema(
     }
 )
 
+LINKWITZ_SCHEMA = cv.Schema(
+    {
+        # measured sealed box resonance f0/q0 and target fp/qp, a frequency of 0 turns it off
+        cv.Optional(CONF_F0, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=200)),
+        cv.Optional(CONF_Q0, default=0.707): cv.float_range(min=0.3, max=2),
+        cv.Optional(CONF_FP, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=200)),
+        cv.Optional(CONF_QP, default=0.5): cv.float_range(min=0.3, max=2),
+    }
+)
+
+def validate_crossover(config):
+    if config[CONF_FREQUENCY] < config[CONF_TWEETER_MIN_FREQUENCY]:
+        raise cv.Invalid(f"{CONF_FREQUENCY} must not be below {CONF_TWEETER_MIN_FREQUENCY}")
+    return config
+
 CROSSOVER_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_FILTER, default="LR4"): cv.enum(CROSSOVER_FILTERS, upper=True),
         cv.Optional(CONF_FREQUENCY, default="2500Hz"): cv.All(cv.frequency, cv.float_range(min=500, max=8000)),
+        # lowest crossover frequency the tweeter may ever get, also limits the frequency number
+        cv.Optional(CONF_TWEETER_MIN_FREQUENCY, default="500Hz"): cv.All(cv.frequency, cv.float_range(min=500, max=8000)),
         cv.Optional(CONF_TWEETER_CHANNEL, default="LEFT"): cv.enum(CROSSOVER_CHANNELS, upper=True),
         cv.Optional(CONF_TWEETER_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=6)),
         cv.Optional(CONF_MID_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=6)),
@@ -170,12 +194,14 @@ CROSSOVER_SCHEMA = cv.Schema(
         # tweeter: breakup notch and air shelf at 10kHz
         cv.Optional(CONF_TWEETER_NOTCH, default={}): NOTCH_SCHEMA,
         cv.Optional(CONF_AIR_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-6, max=6)),
+        cv.Optional(CONF_LINKWITZ, default={}): LINKWITZ_SCHEMA,
+        cv.Optional(CONF_HEADROOM_COMPENSATION, default=False): cv.boolean,
         cv.Optional(CONF_LOUDNESS, default=False): cv.boolean,
         cv.Optional(CONF_LOUDNESS_REFERENCE, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-60, max=0)),
         # rate the DSP biquads run at, 96kHz with the startup registers used by this component
         cv.Optional(CONF_DSP_SAMPLE_RATE, default="96000Hz"): cv.All(cv.frequency, cv.one_of(48000, 96000)),
     }
-)
+).add_extra(validate_crossover)
 
 def validate_config(config):
     if config[CONF_DAC_MODE] == "PBTL" and (config[CONF_MIXER_MODE] == "STEREO" or config[CONF_MIXER_MODE] == "STEREO_INVERSE"):
@@ -246,6 +272,13 @@ def _final_validate(config):
     return config
 
 FINAL_VALIDATE_SCHEMA = _final_validate
+
+def crossover_tweeter_min_frequency():
+    # used by the frequency number so Home Assistant cannot go below the YAML minimum
+    for dac in CORE.config.get(CONF_AUDIO_DAC, []):
+        if dac.get(CONF_PLATFORM) == PLATFORM_TAS58XX and CONF_CROSSOVER in dac:
+            return dac[CONF_CROSSOVER][CONF_TWEETER_MIN_FREQUENCY]
+    return 500
 
 def validate_crossover_entities(config, keys):
     # used by number, select and switch platforms: crossover entities need audio_dac crossover:
@@ -342,4 +375,8 @@ async def to_code(config):
         cg.add(var.config_crossover_compensation(crossover_config[CONF_SUBSONIC_FREQUENCY], crossover_config[CONF_BAFFLE_WIDTH],
                                                  crossover_config[CONF_BAFFLE_PLACEMENT], notch[CONF_FREQUENCY],
                                                  notch[CONF_GAIN], notch[CONF_Q], crossover_config[CONF_AIR_GAIN]))
+        cg.add(var.config_crossover_frequency_min(crossover_config[CONF_TWEETER_MIN_FREQUENCY]))
+        linkwitz = crossover_config[CONF_LINKWITZ]
+        cg.add(var.config_crossover_linkwitz(linkwitz[CONF_F0], linkwitz[CONF_Q0], linkwitz[CONF_FP], linkwitz[CONF_QP]))
+        cg.add(var.config_crossover_headroom_compensation(crossover_config[CONF_HEADROOM_COMPENSATION]))
         cg.add(var.config_crossover_loudness(crossover_config[CONF_LOUDNESS], crossover_config[CONF_LOUDNESS_REFERENCE]))
