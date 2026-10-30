@@ -4,6 +4,8 @@
 
 namespace esphome::tas58xx::crossover {
 
+static constexpr float PI_F = 3.14159265358979f;
+
 static float clampf(float value, float low, float high) {
   if (value < low) return low;
   if (value > high) return high;
@@ -45,6 +47,27 @@ biquad::Coefficients crossover_section(CrossoverFilter filter, bool highpass, ui
 
   const double fc = clampf(frequency, FREQUENCY_MIN, FREQUENCY_MAX);
   return highpass ? biquad::highpass(fc, q, fs) : biquad::lowpass(fc, q, fs);
+}
+
+BaffleStep baffle_step(float width_cm, BafflePlacement placement) {
+  BaffleStep step;
+  if (width_cm <= 0.0f) return step;
+
+  const float width_m = clampf(width_cm, BAFFLE_WIDTH_MIN_CM, BAFFLE_WIDTH_MAX_CM) / 100.0f;
+  step.frequency = SPEED_OF_SOUND_M_PER_S / (PI_F * width_m);
+  switch (placement) {
+    case PLACEMENT_FREESTANDING:
+      step.gain_db = 6.0f;
+      break;
+    case PLACEMENT_NEAR_WALL:
+      step.gain_db = 3.0f;
+      break;
+    case PLACEMENT_CORNER:
+    default:
+      step.gain_db = 0.0f;
+      break;
+  }
+  return step;
 }
 
 LoudnessBoost loudness_boost(const Settings &settings, float volume_db) {
@@ -94,6 +117,30 @@ biquad::Coefficients band_coefficients(const Settings &settings, DriverRole role
 
   if (band >= BAND_PEQ_START && band < BAND_PEQ_START + NUMBER_PEQ_BANDS) {
     return peq_coefficients(driver.peq[band - BAND_PEQ_START], fs);
+  }
+
+  if (band == BAND_SUBSONIC && !is_tweeter) {
+    if (settings.subsonic_frequency < SUBSONIC_FREQUENCY_MIN) return biquad::passthrough();
+    return biquad::highpass(clampf(settings.subsonic_frequency, SUBSONIC_FREQUENCY_MIN, SUBSONIC_FREQUENCY_MAX),
+                            biquad::Q_BUTTERWORTH, fs);
+  }
+
+  if (band == BAND_BAFFLE_STEP && !is_tweeter) {
+    const BaffleStep step = baffle_step(settings.baffle_width_cm, settings.baffle_placement);
+    return biquad::low_shelf(step.frequency, step.gain_db, biquad::Q_BUTTERWORTH, fs);
+  }
+
+  if (band == BAND_NOTCH && is_tweeter) {
+    // only a cut, a boost at the breakup frequency would make it worse
+    if (settings.notch_frequency < NOTCH_FREQUENCY_MIN || settings.notch_gain_db >= 0.0f) return biquad::passthrough();
+    return biquad::peaking(clampf(settings.notch_frequency, NOTCH_FREQUENCY_MIN, NOTCH_FREQUENCY_MAX),
+                           clampf(settings.notch_gain_db, NOTCH_GAIN_MIN_DB, 0.0f),
+                           clampf(settings.notch_q, NOTCH_Q_MIN, NOTCH_Q_MAX), fs);
+  }
+
+  if (band == BAND_AIR && is_tweeter) {
+    return biquad::high_shelf(AIR_FREQUENCY, clampf(settings.air_gain_db, -AIR_GAIN_MAX_DB, AIR_GAIN_MAX_DB),
+                              biquad::Q_BUTTERWORTH, fs);
   }
 
   if (band == BAND_LOUDNESS_BASS && !is_tweeter) {

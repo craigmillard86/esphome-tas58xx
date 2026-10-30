@@ -451,10 +451,12 @@ Each output channel has 15 biquad filters. EQ Crossover uses them like this:
 |-------|-----------------|-------------|
 | 1     | Gain trim and polarity | Gain trim and polarity |
 | 2     | Delay | Delay |
-| 3-6   | High-pass crossover | Low-pass crossover |
+| 3-4   | High-pass crossover | Low-pass crossover |
+| 5     | Not used | Subsonic high-pass |
+| 6     | Not used | Not used |
 | 7-12  | 6 parametric EQ bands | 6 parametric EQ bands |
-| 13    | Not used | Loudness bass shelf (200 Hz) |
-| 14    | Not used | Not used |
+| 13    | Breakup notch | Baffle step low shelf |
+| 14    | Air shelf (10 kHz) | Loudness bass shelf (200 Hz) |
 | 15    | Loudness treble shelf (4 kHz) | Not used |
 
 Filter types:
@@ -473,6 +475,22 @@ Delay is set as a distance in millimetres (0 to 50 mm). Use it when one driver's
 sits in front of the other. The DSP has no true delay line. The delay is a 1st order all-pass filter.
 It is accurate at low frequencies and gets less accurate above about 1/(π × delay).
 Check the result with a measurement.
+
+### Speaker compensation
+These filters are all off by default. Setting a value to 0 turns it off again.
+None of them can remove the tweeter high-pass, so they are changed while playing.
+
+- **Subsonic filter** (mid): a 2nd order Butterworth high-pass from 10 Hz to 100 Hz.
+  It stops the mid/bass driver moving a lot at frequencies you cannot hear.
+  Use it for ported boxes, or to protect a small driver at high volume.
+- **Baffle step** (mid): a low shelf that makes up for the bass lost around the edges of the front baffle.
+  Set the baffle width in cm (5 to 50). The shelf frequency is 343 / (π × width).
+  For example 20 cm gives about 546 Hz.
+  Placement sets the boost: Freestanding +6 dB, Near Wall +3 dB, Corner 0 dB.
+- **Tweeter notch** (tweeter): a narrow cut at the dome breakup frequency, from 1 kHz to 24 kHz.
+  The gain must be below 0 dB (down to -24 dB). A boost is ignored. Q is 0.5 to 20, default 5.
+  Typical: aluminium dome 20-25 kHz at Q 5-10, silk dome 15-18 kHz at Q 3-5.
+- **Air shelf** (tweeter): a high shelf at a fixed 10 kHz corner, -6 dB to +6 dB.
 
 ### Fail-safe: the tweeter never plays full range
 A tweeter can be damaged by full range audio. EQ Crossover protects it like this:
@@ -538,6 +556,14 @@ audio_dac:
           type: LOW_SHELF
       loudness: false
       loudness_reference: 0dB
+      subsonic_frequency: 40Hz
+      baffle_width: 20
+      baffle_placement: NEAR_WALL
+      tweeter_notch:
+        frequency: 22000Hz
+        gain: -6dB
+        q: 5.0
+      air_gain: 1dB
 ```
 Configuration variables under **crossover:** (all optional):
 - **filter:** LR2, LR4, BW2 or BW4. Defaults to LR4.
@@ -549,6 +575,12 @@ Configuration variables under **crossover:** (all optional):
 - **tweeter_peq:** and **mid_peq:** a list of up to 6 bands. Each band has
   **frequency:** (default 1000Hz), **gain:** (default 0dB), **q:** (default 1.0) and
   **type:** PEAKING, LOW_SHELF or HIGH_SHELF (default PEAKING).
+- **subsonic_frequency:** 0Hz (off) or 10Hz to 100Hz. Defaults to 0Hz.
+- **baffle_width:** 0 (off) to 50 (cm). Defaults to 0.
+- **baffle_placement:** FREESTANDING, NEAR_WALL or CORNER. Defaults to FREESTANDING.
+- **tweeter_notch:** **frequency:** 0Hz (off) or 1000Hz to 24000Hz (default 0Hz),
+  **gain:** -24dB to 0dB (default 0dB, off) and **q:** 0.5 to 20 (default 5.0).
+- **air_gain:** -6dB to 6dB. Defaults to 0dB.
 - **loudness:** turn loudness on. Defaults to false.
 - **loudness_reference:** -60dB to 0dB. Defaults to 0dB.
 - **dsp_sample_rate:** 96000Hz or 48000Hz. Defaults to 96000Hz. See "DSP sample rate" above.
@@ -570,6 +602,8 @@ select:
       name: Crossover Filter
     crossover_tweeter_channel:
       name: Tweeter Channel
+    baffle_placement:
+      name: Baffle Placement
     tweeter_peq_1_type:        # up to tweeter_peq_6_type
       name: Tweeter PEQ 1 Type
     mid_peq_1_type:            # up to mid_peq_6_type
@@ -592,6 +626,18 @@ number:
       name: Mid Delay
     loudness_reference:
       name: Loudness Reference
+    subsonic_frequency:
+      name: Subsonic Filter
+    baffle_width:
+      name: Baffle Width
+    tweeter_notch_frequency:
+      name: Tweeter Notch Frequency
+    tweeter_notch_gain:
+      name: Tweeter Notch Gain
+    tweeter_notch_q:
+      name: Tweeter Notch Q
+    air_gain:
+      name: Air Shelf Gain
     tweeter_peq_1_frequency:   # tweeter_peq_1_ to tweeter_peq_6_
       name: Tweeter PEQ 1 Frequency
     tweeter_peq_1_gain:

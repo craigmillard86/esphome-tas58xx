@@ -1053,6 +1053,13 @@ float Tas58xxComponent::get_crossover_value(CrossoverParam param, uint8_t role, 
     case XO_PARAM_PEQ_GAIN:           return peq.gain_db;
     case XO_PARAM_PEQ_Q:              return peq.q;
     case XO_PARAM_PEQ_TYPE:           return static_cast<float>(peq.type);
+    case XO_PARAM_SUBSONIC_FREQUENCY: return this->xover_.subsonic_frequency;
+    case XO_PARAM_BAFFLE_WIDTH:       return this->xover_.baffle_width_cm;
+    case XO_PARAM_BAFFLE_PLACEMENT:   return static_cast<float>(this->xover_.baffle_placement);
+    case XO_PARAM_NOTCH_FREQUENCY:    return this->xover_.notch_frequency;
+    case XO_PARAM_NOTCH_GAIN:         return this->xover_.notch_gain_db;
+    case XO_PARAM_NOTCH_Q:            return this->xover_.notch_q;
+    case XO_PARAM_AIR_GAIN:           return this->xover_.air_gain_db;
   }
   return 0.0f;
 }
@@ -1150,6 +1157,55 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
       ESP_LOGD(TAG, "Set %s PEQ %d Type index: %d", ROLE_TEXT[role], band + 1, type);
       break;
     }
+
+    // speaker compensation bands, none of them can remove the tweeter high-pass
+    case XO_PARAM_SUBSONIC_FREQUENCY:
+      this->xover_.subsonic_frequency = clamp(value, 0.0f, crossover::SUBSONIC_FREQUENCY_MAX);
+      ESP_LOGD(TAG, "Set Subsonic Filter: %.0fHz", this->xover_.subsonic_frequency);
+      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_SUBSONIC);
+      return;
+
+    case XO_PARAM_BAFFLE_WIDTH:
+      this->xover_.baffle_width_cm = clamp(value, 0.0f, crossover::BAFFLE_WIDTH_MAX_CM);
+      ESP_LOGD(TAG, "Set Baffle Width: %.0fcm", this->xover_.baffle_width_cm);
+      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_BAFFLE_STEP);
+      return;
+
+    case XO_PARAM_BAFFLE_PLACEMENT: {
+      const uint8_t placement = static_cast<uint8_t>(value);
+      if (placement >= crossover::NUMBER_PLACEMENTS) {
+        ESP_LOGE(TAG, "Invalid Baffle Placement index: %d", placement);
+        return;
+      }
+      this->xover_.baffle_placement = static_cast<crossover::BafflePlacement>(placement);
+      ESP_LOGD(TAG, "Set Baffle Placement index: %d", placement);
+      this->crossover_band_changed_(crossover::ROLE_MID, crossover::BAND_BAFFLE_STEP);
+      return;
+    }
+
+    case XO_PARAM_NOTCH_FREQUENCY:
+      this->xover_.notch_frequency = clamp(value, 0.0f, crossover::NOTCH_FREQUENCY_MAX);
+      ESP_LOGD(TAG, "Set Tweeter Notch Frequency: %.0fHz", this->xover_.notch_frequency);
+      this->crossover_band_changed_(crossover::ROLE_TWEETER, crossover::BAND_NOTCH);
+      return;
+
+    case XO_PARAM_NOTCH_GAIN:
+      this->xover_.notch_gain_db = clamp(value, crossover::NOTCH_GAIN_MIN_DB, 0.0f);
+      ESP_LOGD(TAG, "Set Tweeter Notch Gain: %.1fdB", this->xover_.notch_gain_db);
+      this->crossover_band_changed_(crossover::ROLE_TWEETER, crossover::BAND_NOTCH);
+      return;
+
+    case XO_PARAM_NOTCH_Q:
+      this->xover_.notch_q = clamp(value, crossover::NOTCH_Q_MIN, crossover::NOTCH_Q_MAX);
+      ESP_LOGD(TAG, "Set Tweeter Notch Q: %.1f", this->xover_.notch_q);
+      this->crossover_band_changed_(crossover::ROLE_TWEETER, crossover::BAND_NOTCH);
+      return;
+
+    case XO_PARAM_AIR_GAIN:
+      this->xover_.air_gain_db = clamp(value, -crossover::AIR_GAIN_MAX_DB, crossover::AIR_GAIN_MAX_DB);
+      ESP_LOGD(TAG, "Set Air Shelf Gain: %.1fdB", this->xover_.air_gain_db);
+      this->crossover_band_changed_(crossover::ROLE_TWEETER, crossover::BAND_AIR);
+      return;
 
     default:
       return;

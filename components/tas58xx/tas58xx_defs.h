@@ -55,6 +55,13 @@ enum CrossoverParam : uint8_t {
     XO_PARAM_PEQ_GAIN,
     XO_PARAM_PEQ_Q,
     XO_PARAM_PEQ_TYPE,
+    XO_PARAM_SUBSONIC_FREQUENCY,
+    XO_PARAM_BAFFLE_WIDTH,
+    XO_PARAM_BAFFLE_PLACEMENT,
+    XO_PARAM_NOTCH_FREQUENCY,
+    XO_PARAM_NOTCH_GAIN,
+    XO_PARAM_NOTCH_Q,
+    XO_PARAM_AIR_GAIN,
 };
 
 // steps used by 'loop' to (re)apply the crossover while the DAC is muted

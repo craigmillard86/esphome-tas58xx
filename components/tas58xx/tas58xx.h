@@ -69,6 +69,16 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
   void config_crossover_peq(uint8_t role, uint8_t band, float frequency, float gain_db, float q, uint8_t type) {
     this->xover_.driver[role].peq[band] = {frequency, gain_db, q, static_cast<crossover::PeqType>(type)};
   }
+  void config_crossover_compensation(float subsonic_frequency, float baffle_width_cm, uint8_t baffle_placement,
+                                     float notch_frequency, float notch_gain_db, float notch_q, float air_gain_db) {
+    this->xover_.subsonic_frequency = subsonic_frequency;
+    this->xover_.baffle_width_cm = baffle_width_cm;
+    this->xover_.baffle_placement = static_cast<crossover::BafflePlacement>(baffle_placement);
+    this->xover_.notch_frequency = notch_frequency;
+    this->xover_.notch_gain_db = notch_gain_db;
+    this->xover_.notch_q = notch_q;
+    this->xover_.air_gain_db = air_gain_db;
+  }
   void config_crossover_loudness(bool enabled, float reference_db) {
     this->xover_.loudness = enabled;
     this->xover_.loudness_reference_db = reference_db;

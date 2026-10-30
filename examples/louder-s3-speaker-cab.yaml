@@ -146,6 +146,15 @@ audio_dac:
       mid_gain: 0dB
       loudness: false
       loudness_reference: 0dB
+      # speaker compensation, all off here: set them from Home Assistant once measured
+      subsonic_frequency: 0Hz     # mid high-pass, e.g. 40Hz for a sealed TCP115
+      baffle_width: 0             # cm, front baffle width for baffle step compensation
+      baffle_placement: FREESTANDING
+      tweeter_notch:
+        frequency: 0Hz            # DC28FT breakup notch, gain must be negative
+        gain: 0dB
+        q: 5.0
+      air_gain: 0dB               # tweeter high shelf at 10kHz
 
 select:
   - platform: tas58xx
@@ -157,6 +166,8 @@ select:
       name: Crossover Filter
     crossover_tweeter_channel:
       name: Tweeter Channel
+    baffle_placement:
+      name: Baffle Placement
     tweeter_peq_1_type:
       name: Tweeter PEQ 1 Type
     tweeter_peq_2_type:
@@ -180,6 +191,18 @@ number:
       name: Mid Delay
     loudness_reference:
       name: Loudness Reference
+    subsonic_frequency:
+      name: Subsonic Filter
+    baffle_width:
+      name: Baffle Width
+    tweeter_notch_frequency:
+      name: Tweeter Notch Frequency
+    tweeter_notch_gain:
+      name: Tweeter Notch Gain
+    tweeter_notch_q:
+      name: Tweeter Notch Q
+    air_gain:
+      name: Air Shelf Gain
     # Two of the six PEQ bands per driver are shown here. Add tweeter_peq_3_* to _6_* the same way.
     tweeter_peq_1_frequency:
       name: Tweeter PEQ 1 Frequency

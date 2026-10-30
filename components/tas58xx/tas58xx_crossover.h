@@ -6,10 +6,12 @@
 // Band allocation per driver (same layout as the snapclient bi-amp port):
 //   band 0      gain trim + polarity
 //   band 1      delay (1st order all-pass approximation)
-//   bands 2-5   crossover sections (high-pass for tweeter, low-pass for mid), unused ones passthrough
+//   bands 2-3   crossover sections (high-pass for tweeter, low-pass for mid), unused ones passthrough
+//   band 4      mid: subsonic high-pass       tweeter: passthrough
+//   band 5      spare, passthrough
 //   bands 6-11  parametric EQ, 6 bands
-//   band 12     spare, passthrough
-//   band 13     mid: loudness bass shelf     tweeter: passthrough
+//   band 12     mid: baffle step low shelf    tweeter: breakup notch
+//   band 13     mid: loudness bass shelf      tweeter: air high shelf
 //   band 14     tweeter: loudness treble shelf  mid: passthrough
 
 #include <cstdint>
@@ -31,6 +33,12 @@ enum PeqType : uint8_t {
   PEQ_HIGH_SHELF,
 };
 
+enum BafflePlacement : uint8_t {
+  PLACEMENT_FREESTANDING = 0,  // +6dB, no boundary reinforcement
+  PLACEMENT_NEAR_WALL,         // +3dB, wall gives partial reinforcement
+  PLACEMENT_CORNER,            // 0dB, corner gives full reinforcement
+};
+
 enum DriverRole : uint8_t {
   ROLE_TWEETER = 0,
   ROLE_MID,
@@ -41,13 +49,18 @@ static constexpr uint8_t NUMBER_BANDS = 15;
 static constexpr uint8_t NUMBER_PEQ_BANDS = 6;
 static constexpr uint8_t NUMBER_FILTERS = 4;
 static constexpr uint8_t NUMBER_PEQ_TYPES = 3;
+static constexpr uint8_t NUMBER_PLACEMENTS = 3;
 
 static constexpr uint8_t BAND_GAIN = 0;
 static constexpr uint8_t BAND_DELAY = 1;
 static constexpr uint8_t BAND_CROSSOVER_START = 2;
-static constexpr uint8_t BAND_CROSSOVER_COUNT = 4;
+static constexpr uint8_t BAND_CROSSOVER_COUNT = 2;  // LR4 and BW4 need 2 sections
+static constexpr uint8_t BAND_SUBSONIC = 4;          // on mid driver
 static constexpr uint8_t BAND_PEQ_START = 6;
+static constexpr uint8_t BAND_BAFFLE_STEP = 12;      // on mid driver
+static constexpr uint8_t BAND_NOTCH = 12;            // on tweeter driver
 static constexpr uint8_t BAND_LOUDNESS_BASS = 13;    // on mid driver
+static constexpr uint8_t BAND_AIR = 13;              // on tweeter driver
 static constexpr uint8_t BAND_LOUDNESS_TREBLE = 14;  // on tweeter driver
 
 static constexpr float FREQUENCY_MIN = 500.0f;
@@ -62,6 +75,26 @@ static constexpr float PEQ_Q_MIN = 0.1f;
 static constexpr float PEQ_Q_MAX = 10.0f;
 static constexpr float LOUDNESS_REFERENCE_MIN_DB = -60.0f;
 static constexpr float LOUDNESS_REFERENCE_MAX_DB = 0.0f;
+
+// subsonic high-pass on the mid driver, 2nd order Butterworth, below the minimum it is off
+static constexpr float SUBSONIC_FREQUENCY_MIN = 10.0f;
+static constexpr float SUBSONIC_FREQUENCY_MAX = 100.0f;
+
+// baffle step: low shelf at f = c / (pi * width), gain set by room placement, width 0 is off
+static constexpr float BAFFLE_WIDTH_MIN_CM = 5.0f;
+static constexpr float BAFFLE_WIDTH_MAX_CM = 50.0f;
+static constexpr float SPEED_OF_SOUND_M_PER_S = 343.0f;
+
+// tweeter breakup notch, only a cut: frequency 0 or gain 0 is off
+static constexpr float NOTCH_FREQUENCY_MIN = 1000.0f;
+static constexpr float NOTCH_FREQUENCY_MAX = 24000.0f;
+static constexpr float NOTCH_GAIN_MIN_DB = -24.0f;
+static constexpr float NOTCH_Q_MIN = 0.5f;
+static constexpr float NOTCH_Q_MAX = 20.0f;
+
+// air / brilliance high shelf on the tweeter at a fixed 10kHz corner
+static constexpr float AIR_FREQUENCY = 10000.0f;
+static constexpr float AIR_GAIN_MAX_DB = 6.0f;
 
 // loudness: boost grows linearly with attenuation below the reference level
 // maximum boost values follow the snapclient defaults for its lowest volume zone
@@ -92,6 +125,19 @@ struct Settings {
   DriverSettings driver[NUMBER_ROLES];
   bool loudness{false};
   float loudness_reference_db{0.0f};
+
+  float subsonic_frequency{0.0f};  // mid, 0 is off
+  float baffle_width_cm{0.0f};     // mid, 0 is off
+  BafflePlacement baffle_placement{PLACEMENT_FREESTANDING};
+  float notch_frequency{0.0f};     // tweeter, 0 is off
+  float notch_gain_db{0.0f};
+  float notch_q{5.0f};
+  float air_gain_db{0.0f};         // tweeter, 0 is off
+};
+
+struct BaffleStep {
+  float frequency{0.0f};
+  float gain_db{0.0f};
 };
 
 struct LoudnessBoost {
@@ -104,6 +150,9 @@ uint8_t crossover_sections(CrossoverFilter filter);
 
 // coefficients of one crossover section, index < crossover_sections()
 biquad::Coefficients crossover_section(CrossoverFilter filter, bool highpass, uint8_t index, float frequency, float fs);
+
+// baffle step shelf frequency and gain, gain 0 when off
+BaffleStep baffle_step(float width_cm, BafflePlacement placement);
 
 // loudness boost at a digital volume, quantised to LOUDNESS_STEP_DB
 LoudnessBoost loudness_boost(const Settings &settings, float volume_db);

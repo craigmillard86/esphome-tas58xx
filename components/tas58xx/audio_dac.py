@@ -48,6 +48,11 @@ CONF_MID_PEQ = "mid_peq"
 CONF_LOUDNESS = "loudness"
 CONF_LOUDNESS_REFERENCE = "loudness_reference"
 CONF_Q = "q"
+CONF_SUBSONIC_FREQUENCY = "subsonic_frequency"
+CONF_BAFFLE_WIDTH = "baffle_width"
+CONF_BAFFLE_PLACEMENT = "baffle_placement"
+CONF_TWEETER_NOTCH = "tweeter_notch"
+CONF_AIR_GAIN = "air_gain"
 
 # used for looking through CORE.config to derive eq configuration
 NUMBER_COMPONENT= "number"
@@ -68,6 +73,7 @@ EQ_CROSSOVER = 4
 CROSSOVER_FILTERS = {"LR2": 0, "LR4": 1, "BW2": 2, "BW4": 3}
 CROSSOVER_CHANNELS = {"LEFT": 0, "RIGHT": 1}
 PEQ_TYPES = {"PEAKING": 0, "LOW_SHELF": 1, "HIGH_SHELF": 2}
+BAFFLE_PLACEMENTS = {"FREESTANDING": 0, "NEAR_WALL": 1, "CORNER": 2}
 ROLE_TWEETER = 0
 ROLE_MID = 1
 NUMBER_PEQ_BANDS = 6
@@ -134,6 +140,15 @@ PEQ_BAND_SCHEMA = cv.Schema(
     }
 )
 
+NOTCH_SCHEMA = cv.Schema(
+    {
+        # frequency 0 or gain 0dB turns the notch off
+        cv.Optional(CONF_FREQUENCY, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=24000)),
+        cv.Optional(CONF_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=0)),
+        cv.Optional(CONF_Q, default=5.0): cv.float_range(min=0.5, max=20),
+    }
+)
+
 CROSSOVER_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_FILTER, default="LR4"): cv.enum(CROSSOVER_FILTERS, upper=True),
@@ -148,6 +163,13 @@ CROSSOVER_SCHEMA = cv.Schema(
         cv.Optional(CONF_MID_DELAY, default=0): cv.float_range(min=0, max=50),
         cv.Optional(CONF_TWEETER_PEQ, default=[]): cv.All(cv.ensure_list(PEQ_BAND_SCHEMA), cv.Length(max=NUMBER_PEQ_BANDS)),
         cv.Optional(CONF_MID_PEQ, default=[]): cv.All(cv.ensure_list(PEQ_BAND_SCHEMA), cv.Length(max=NUMBER_PEQ_BANDS)),
+        # mid: subsonic high-pass (0 is off, else 10Hz to 100Hz) and baffle step (width 0 is off)
+        cv.Optional(CONF_SUBSONIC_FREQUENCY, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=100)),
+        cv.Optional(CONF_BAFFLE_WIDTH, default=0): cv.float_range(min=0, max=50),
+        cv.Optional(CONF_BAFFLE_PLACEMENT, default="FREESTANDING"): cv.enum(BAFFLE_PLACEMENTS, upper=True, space="_"),
+        # tweeter: breakup notch and air shelf at 10kHz
+        cv.Optional(CONF_TWEETER_NOTCH, default={}): NOTCH_SCHEMA,
+        cv.Optional(CONF_AIR_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-6, max=6)),
         cv.Optional(CONF_LOUDNESS, default=False): cv.boolean,
         cv.Optional(CONF_LOUDNESS_REFERENCE, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-60, max=0)),
         # rate the DSP biquads run at, 96kHz with the startup registers used by this component
@@ -316,4 +338,8 @@ async def to_code(config):
         for role, key in ((ROLE_TWEETER, CONF_TWEETER_PEQ), (ROLE_MID, CONF_MID_PEQ)):
             for band, peq in enumerate(crossover_config[key]):
                 cg.add(var.config_crossover_peq(role, band, peq[CONF_FREQUENCY], peq[CONF_GAIN], peq[CONF_Q], peq[CONF_TYPE]))
+        notch = crossover_config[CONF_TWEETER_NOTCH]
+        cg.add(var.config_crossover_compensation(crossover_config[CONF_SUBSONIC_FREQUENCY], crossover_config[CONF_BAFFLE_WIDTH],
+                                                 crossover_config[CONF_BAFFLE_PLACEMENT], notch[CONF_FREQUENCY],
+                                                 notch[CONF_GAIN], notch[CONF_Q], crossover_config[CONF_AIR_GAIN]))
         cg.add(var.config_crossover_loudness(crossover_config[CONF_LOUDNESS], crossover_config[CONF_LOUDNESS_REFERENCE]))

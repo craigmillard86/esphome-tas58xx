@@ -31,10 +31,12 @@ CrossoverParam = tas58xx_ns.enum("CrossoverParam")
 CROSSOVER_FILTER_OPTIONS = ["LR2 12dB/oct", "LR4 24dB/oct", "Butterworth 12dB/oct", "Butterworth 24dB/oct"]
 CROSSOVER_CHANNEL_OPTIONS = ["Left", "Right"]
 PEQ_TYPE_OPTIONS = ["Peaking", "Low Shelf", "High Shelf"]
+BAFFLE_PLACEMENT_OPTIONS = ["Freestanding", "Near Wall", "Corner"]
 
 CROSSOVER_SELECTS = {
     "crossover_filter": ("XO_PARAM_FILTER", ROLE_TWEETER, 0, CROSSOVER_FILTER_OPTIONS),
     "crossover_tweeter_channel": ("XO_PARAM_TWEETER_CHANNEL", ROLE_TWEETER, 0, CROSSOVER_CHANNEL_OPTIONS),
+    "baffle_placement": ("XO_PARAM_BAFFLE_PLACEMENT", ROLE_MID, 0, BAFFLE_PLACEMENT_OPTIONS),
 }
 for _role, _prefix in ((ROLE_TWEETER, "tweeter"), (ROLE_MID, "mid")):
     for _band in range(NUMBER_PEQ_BANDS):

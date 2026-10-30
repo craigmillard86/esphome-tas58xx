@@ -301,6 +301,68 @@ static void test_loudness() {
   CHECK(near(db(response(treble, 20000.0)), 4.0, 0.2), "loudness treble shelf on tweeter band 14");
 }
 
+static void test_speaker_compensation() {
+  const double fs = 96000.0;
+  const crossover::LoudnessBoost no_boost;
+  crossover::Settings s;
+
+  // everything off is passthrough on both drivers
+  for (uint8_t band : {crossover::BAND_SUBSONIC, crossover::BAND_BAFFLE_STEP, crossover::BAND_AIR}) {
+    for (uint8_t role = 0; role < crossover::NUMBER_ROLES; role++) {
+      const biquad::Coefficients c = crossover::band_coefficients(s, static_cast<crossover::DriverRole>(role), band, fs, no_boost);
+      CHECK(c.b0 == 1.0 && c.b1 == 0.0 && c.a1 == 0.0, "band %d role %d passthrough when off", band, role);
+    }
+  }
+
+  // subsonic: Butterworth high-pass on the mid only
+  s.subsonic_frequency = 30.0f;
+  const biquad::Coefficients sub = crossover::band_coefficients(s, crossover::ROLE_MID, crossover::BAND_SUBSONIC, fs, no_boost);
+  CHECK(near(db(response(sub, 30.0, fs)), -3.0103, 0.01), "subsonic -3dB at 30Hz");
+  CHECK(near(db(response(sub, 1000.0, fs)), 0.0, 0.01), "subsonic flat at 1kHz");
+  const biquad::Coefficients sub_tw = crossover::band_coefficients(s, crossover::ROLE_TWEETER, crossover::BAND_SUBSONIC, fs, no_boost);
+  CHECK(sub_tw.b0 == 1.0 && sub_tw.a1 == 0.0, "subsonic not on tweeter");
+  s.subsonic_frequency = 5.0f;
+  const biquad::Coefficients sub_off = crossover::band_coefficients(s, crossover::ROLE_MID, crossover::BAND_SUBSONIC, fs, no_boost);
+  CHECK(sub_off.b0 == 1.0 && sub_off.a1 == 0.0, "subsonic below 10Hz is off");
+
+  // baffle step: 20cm freestanding is +6dB below ~546Hz, near wall +3dB, corner off
+  const crossover::BaffleStep step = crossover::baffle_step(20.0f, crossover::PLACEMENT_FREESTANDING);
+  CHECK(near(step.frequency, 545.9, 0.5) && step.gain_db == 6.0f, "baffle step 20cm: %.1fHz %.1fdB", step.frequency, step.gain_db);
+  CHECK(crossover::baffle_step(20.0f, crossover::PLACEMENT_NEAR_WALL).gain_db == 3.0f, "baffle step near wall");
+  CHECK(crossover::baffle_step(20.0f, crossover::PLACEMENT_CORNER).gain_db == 0.0f, "baffle step corner");
+  s.baffle_width_cm = 20.0f;
+  const biquad::Coefficients baffle = crossover::band_coefficients(s, crossover::ROLE_MID, crossover::BAND_BAFFLE_STEP, fs, no_boost);
+  CHECK(near(db(response(baffle, 20.0, fs)), 6.0, 0.1), "baffle step +6dB at 20Hz");
+  CHECK(near(db(response(baffle, 10000.0, fs)), 0.0, 0.05), "baffle step flat at 10kHz");
+
+  // notch: cut only, on the tweeter only
+  s.notch_frequency = 18000.0f;
+  s.notch_gain_db = -10.0f;
+  s.notch_q = 5.0f;
+  const biquad::Coefficients notch = crossover::band_coefficients(s, crossover::ROLE_TWEETER, crossover::BAND_NOTCH, fs, no_boost);
+  CHECK(near(db(response(notch, 18000.0, fs)), -10.0, 0.01), "notch -10dB at 18kHz");
+  CHECK(near(db(response(notch, 5000.0, fs)), 0.0, 0.1), "notch narrow");
+  const biquad::Coefficients notch_mid = crossover::band_coefficients(s, crossover::ROLE_MID, crossover::BAND_NOTCH, fs, no_boost);
+  CHECK(!near(db(response(notch_mid, 18000.0, fs)), -10.0, 1.0), "notch not on mid (band 12 is baffle step there)");
+  s.notch_gain_db = 3.0f;
+  const biquad::Coefficients notch_boost = crossover::band_coefficients(s, crossover::ROLE_TWEETER, crossover::BAND_NOTCH, fs, no_boost);
+  CHECK(notch_boost.b0 == 1.0 && notch_boost.a1 == 0.0, "notch ignores a boost");
+
+  // air shelf at 10kHz on the tweeter
+  s.air_gain_db = 3.0f;
+  const biquad::Coefficients air = crossover::band_coefficients(s, crossover::ROLE_TWEETER, crossover::BAND_AIR, fs, no_boost);
+  CHECK(near(db(response(air, 40000.0, fs)), 3.0, 0.2), "air shelf +3dB high up: %.2f", db(response(air, 40000.0, fs)));
+  CHECK(near(db(response(air, 1000.0, fs)), 0.0, 0.1), "air shelf flat at 1kHz");
+
+  // the tweeter is still a deep high-pass with all of these on
+  s.filter = crossover::FILTER_LR4;
+  std::complex<double> h = 1.0;
+  for (uint8_t band = 0; band < crossover::NUMBER_BANDS; band++) {
+    h *= response(crossover::band_coefficients(s, crossover::ROLE_TWEETER, band, fs, no_boost), 100.0, fs);
+  }
+  CHECK(db(h) < -100.0, "tweeter chain still blocks 100Hz: %.1fdB", db(h));
+}
+
 int main() {
   test_lr4_2500hz_reference();
   test_crossover_responses();
@@ -311,6 +373,7 @@ int main() {
   test_encoding();
   test_chain();
   test_loudness();
+  test_speaker_compensation();
 
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
