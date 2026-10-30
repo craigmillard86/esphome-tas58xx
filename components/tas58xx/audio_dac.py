@@ -150,7 +150,7 @@ PEQ_BAND_SCHEMA = cv.Schema(
 NOTCH_SCHEMA = cv.Schema(
     {
         # frequency 0 or gain 0dB turns the notch off
-        cv.Optional(CONF_FREQUENCY, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=24000)),
+        cv.Optional(CONF_FREQUENCY, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=20000)),
         cv.Optional(CONF_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=0)),
         cv.Optional(CONF_Q, default=5.0): cv.float_range(min=0.5, max=20),
     }

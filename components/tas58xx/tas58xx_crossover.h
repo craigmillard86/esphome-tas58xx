@@ -88,7 +88,7 @@ static constexpr float SPEED_OF_SOUND_M_PER_S = 343.0f;
 
 // tweeter breakup notch, only a cut: frequency 0 or gain 0 is off
 static constexpr float NOTCH_FREQUENCY_MIN = 1000.0f;
-static constexpr float NOTCH_FREQUENCY_MAX = 24000.0f;
+static constexpr float NOTCH_FREQUENCY_MAX = 20000.0f;
 static constexpr float NOTCH_GAIN_MIN_DB = -24.0f;
 static constexpr float NOTCH_Q_MIN = 0.5f;
 static constexpr float NOTCH_Q_MAX = 20.0f;

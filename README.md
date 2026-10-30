@@ -489,7 +489,7 @@ None of them can remove the tweeter high-pass, so they are changed while playing
   Set the baffle width in cm (5 to 50). The shelf frequency is 343 / (π × width).
   For example 20 cm gives about 546 Hz.
   Placement sets the boost: Freestanding +6 dB, Near Wall +3 dB, Corner 0 dB.
-- **Tweeter notch** (tweeter): a narrow cut at the dome breakup frequency, from 1 kHz to 24 kHz.
+- **Tweeter notch** (tweeter): a narrow cut at the dome breakup frequency, from 1 kHz to 20 kHz.
   The gain must be below 0 dB (down to -24 dB). A boost is ignored. Q is 0.5 to 20, default 5.
   Typical: aluminium dome 20-25 kHz at Q 5-10, silk dome 15-18 kHz at Q 3-5.
 - **Air shelf** (tweeter): a high shelf at a fixed 10 kHz corner, -6 dB to +6 dB.
@@ -623,7 +623,7 @@ Configuration variables under **crossover:** (all optional):
 - **subsonic_frequency:** 0Hz (off) or 10Hz to 100Hz. Defaults to 0Hz.
 - **baffle_width:** 0 (off) to 50 (cm). Defaults to 0.
 - **baffle_placement:** FREESTANDING, NEAR_WALL or CORNER. Defaults to FREESTANDING.
-- **tweeter_notch:** **frequency:** 0Hz (off) or 1000Hz to 24000Hz (default 0Hz),
+- **tweeter_notch:** **frequency:** 0Hz (off) or 1000Hz to 20000Hz (default 0Hz),
   **gain:** -24dB to 0dB (default 0dB, off) and **q:** 0.5 to 20 (default 5.0).
 - **air_gain:** -6dB to 6dB. Defaults to 0dB.
 - **linkwitz:** **f0:** and **fp:** 0Hz (off) or 15Hz to 200Hz (default 0Hz),
