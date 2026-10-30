@@ -621,12 +621,12 @@ Configuration variables under **crossover:** (all optional):
   **frequency:** (default 1000Hz), **gain:** (default 0dB), **q:** (default 1.0) and
   **type:** PEAKING, LOW_SHELF or HIGH_SHELF (default PEAKING).
 - **subsonic_frequency:** 0Hz (off) or 10Hz to 100Hz. Defaults to 0Hz.
-- **baffle_width:** 0 (off) to 50 (cm). Defaults to 0.
+- **baffle_width:** 0 (off) or 5 to 50 (cm). Defaults to 0.
 - **baffle_placement:** FREESTANDING, NEAR_WALL or CORNER. Defaults to FREESTANDING.
 - **tweeter_notch:** **frequency:** 0Hz (off) or 1000Hz to 20000Hz (default 0Hz),
   **gain:** -24dB to 0dB (default 0dB, off) and **q:** 0.5 to 20 (default 5.0).
 - **air_gain:** -6dB to 6dB. Defaults to 0dB.
-- **linkwitz:** **f0:** and **fp:** 0Hz (off) or 15Hz to 200Hz (default 0Hz),
+- **linkwitz:** **f0:** and **fp:** 0Hz (off) or 15Hz to 200Hz (default 0Hz, set both or neither),
   **q0:** 0.3 to 2 (default 0.707) and **qp:** 0.3 to 2 (default 0.5).
 - **headroom_compensation:** true or false. Defaults to false.
 - **loudness:** turn loudness on. Defaults to false.

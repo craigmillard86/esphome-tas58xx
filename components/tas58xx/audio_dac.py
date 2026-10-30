@@ -138,6 +138,20 @@ MIXER_MODES = {
 ANALOG_GAINS = [-15.5, -15, -14.5, -14, -13.5, -13, -12.5, -12, -11.5, -11, -10.5, -10, -9.5, -9, -8.5, -8,
                  -7.5,  -7,  -6.5,  -6,  -5.5,  -5,  -4.5,  -4,  -3.5,  -3,  -2.5,  -2, -1.5, -1, -0.5,  0]
 
+def zero_or_range(min_value, max_value):
+    # 0 turns the filter off, any other value must be in range
+    range_validator = cv.float_range(min=min_value, max=max_value)
+
+    def validator(value):
+        if value == 0:
+            return value
+        try:
+            return range_validator(value)
+        except cv.Invalid as err:
+            raise cv.Invalid(f"must be 0 (off) or between {min_value} and {max_value}") from err
+
+    return validator
+
 PEQ_BAND_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_FREQUENCY, default="1000Hz"): cv.All(cv.frequency, cv.float_range(min=20, max=20000)),
@@ -150,7 +164,7 @@ PEQ_BAND_SCHEMA = cv.Schema(
 NOTCH_SCHEMA = cv.Schema(
     {
         # frequency 0 or gain 0dB turns the notch off
-        cv.Optional(CONF_FREQUENCY, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=20000)),
+        cv.Optional(CONF_FREQUENCY, default="0Hz"): cv.All(cv.frequency, zero_or_range(1000, 20000)),
         cv.Optional(CONF_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=0)),
         cv.Optional(CONF_Q, default=5.0): cv.float_range(min=0.5, max=20),
     }
@@ -159,9 +173,9 @@ NOTCH_SCHEMA = cv.Schema(
 LINKWITZ_SCHEMA = cv.Schema(
     {
         # measured sealed box resonance f0/q0 and target fp/qp, a frequency of 0 turns it off
-        cv.Optional(CONF_F0, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=200)),
+        cv.Optional(CONF_F0, default="0Hz"): cv.All(cv.frequency, zero_or_range(15, 200)),
         cv.Optional(CONF_Q0, default=0.707): cv.float_range(min=0.3, max=2),
-        cv.Optional(CONF_FP, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=200)),
+        cv.Optional(CONF_FP, default="0Hz"): cv.All(cv.frequency, zero_or_range(15, 200)),
         cv.Optional(CONF_QP, default=0.5): cv.float_range(min=0.3, max=2),
     }
 )
@@ -169,6 +183,9 @@ LINKWITZ_SCHEMA = cv.Schema(
 def validate_crossover(config):
     if config[CONF_FREQUENCY] < config[CONF_TWEETER_MIN_FREQUENCY]:
         raise cv.Invalid(f"{CONF_FREQUENCY} must not be below {CONF_TWEETER_MIN_FREQUENCY}")
+    linkwitz = config[CONF_LINKWITZ]
+    if (linkwitz[CONF_F0] == 0) != (linkwitz[CONF_FP] == 0):
+        raise cv.Invalid(f"{CONF_LINKWITZ} needs both {CONF_F0} and {CONF_FP}, or neither")
     return config
 
 CROSSOVER_SCHEMA = cv.Schema(
@@ -188,8 +205,8 @@ CROSSOVER_SCHEMA = cv.Schema(
         cv.Optional(CONF_TWEETER_PEQ, default=[]): cv.All(cv.ensure_list(PEQ_BAND_SCHEMA), cv.Length(max=NUMBER_PEQ_BANDS)),
         cv.Optional(CONF_MID_PEQ, default=[]): cv.All(cv.ensure_list(PEQ_BAND_SCHEMA), cv.Length(max=NUMBER_PEQ_BANDS)),
         # mid: subsonic high-pass (0 is off, else 10Hz to 100Hz) and baffle step (width 0 is off)
-        cv.Optional(CONF_SUBSONIC_FREQUENCY, default="0Hz"): cv.All(cv.frequency, cv.float_range(min=0, max=100)),
-        cv.Optional(CONF_BAFFLE_WIDTH, default=0): cv.float_range(min=0, max=50),
+        cv.Optional(CONF_SUBSONIC_FREQUENCY, default="0Hz"): cv.All(cv.frequency, zero_or_range(10, 100)),
+        cv.Optional(CONF_BAFFLE_WIDTH, default=0): zero_or_range(5, 50),
         cv.Optional(CONF_BAFFLE_PLACEMENT, default="FREESTANDING"): cv.enum(BAFFLE_PLACEMENTS, upper=True, space="_"),
         # tweeter: breakup notch and air shelf at 10kHz
         cv.Optional(CONF_TWEETER_NOTCH, default={}): NOTCH_SCHEMA,

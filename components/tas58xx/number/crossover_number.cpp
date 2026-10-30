@@ -12,6 +12,8 @@ void CrossoverNumber::setup() {
   this->pref_ = this->make_entity_preference<float>();
   // first boot uses the value from YAML 'crossover:'
   if (!this->pref_.load(&value)) value = this->parent_->get_crossover_value(this->param_, this->role_, this->band_);
+  // a saved value can be outside limits changed in YAML since it was saved
+  value = clamp(value, this->traits.get_min_value(), this->traits.get_max_value());
   this->publish_state(value);
   this->parent_->set_crossover_value(this->param_, this->role_, this->band_, value);
 
