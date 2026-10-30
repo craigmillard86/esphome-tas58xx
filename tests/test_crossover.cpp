@@ -363,6 +363,63 @@ static void test_speaker_compensation() {
   CHECK(db(h) < -100.0, "tweeter chain still blocks 100Hz: %.1fdB", db(h));
 }
 
+static void test_linkwitz_and_headroom() {
+  const double fs = 96000.0;
+  const crossover::LoudnessBoost no_boost;
+
+  // Linkwitz transform f0 80Hz Q0 0.9 -> fp 50Hz Qp 0.6: LF gain (80/50)^2 = +8.16dB, HF unchanged
+  const biquad::Coefficients lt = biquad::linkwitz_transform(80.0, 0.9, 50.0, 0.6, fs);
+  CHECK(near(db(response(lt, 2.0, fs)), 8.1648, 0.05), "Linkwitz LF gain %.2fdB", db(response(lt, 2.0, fs)));
+  CHECK(near(db(response(lt, 5000.0, fs)), 0.0, 0.05), "Linkwitz HF unity");
+  // sealed box (2nd order HP at f0/Q0) times LT equals the target alignment (2nd order HP at fp/Qp)
+  for (double f : {30.0, 50.0, 80.0, 150.0}) {
+    const double box = db(response(biquad::highpass(80.0, 0.9, fs), f, fs) * response(lt, f, fs));
+    const double target = db(response(biquad::highpass(50.0, 0.6, fs), f, fs));
+    CHECK(near(box, target, 0.15), "Linkwitz gives target alignment at %.0fHz: %.2f vs %.2f", f, box, target);
+  }
+
+  crossover::Settings s;
+  const biquad::Coefficients off = crossover::band_coefficients(s, crossover::ROLE_MID, crossover::BAND_LINKWITZ, fs, no_boost);
+  CHECK(off.b0 == 1.0 && off.a1 == 0.0, "Linkwitz off by default");
+  s.linkwitz_f0 = 80.0f; s.linkwitz_q0 = 0.9f; s.linkwitz_fp = 50.0f; s.linkwitz_qp = 0.6f;
+  const biquad::Coefficients on = crossover::band_coefficients(s, crossover::ROLE_MID, crossover::BAND_LINKWITZ, fs, no_boost);
+  CHECK(near(db(response(on, 2.0, fs)), 8.1648, 0.05), "Linkwitz on mid band 5");
+  const biquad::Coefficients tw = crossover::band_coefficients(s, crossover::ROLE_TWEETER, crossover::BAND_LINKWITZ, fs, no_boost);
+  CHECK(tw.b0 == 1.0 && tw.a1 == 0.0, "Linkwitz not on tweeter");
+
+  // minimum crossover frequency from YAML protects the tweeter
+  crossover::Settings m;
+  m.frequency_min = 2000.0f;
+  m.frequency = 800.0f;
+  CHECK(crossover::effective_frequency(m) == 2000.0f, "crossover clamped to YAML minimum");
+  const biquad::Coefficients hp = crossover::band_coefficients(m, crossover::ROLE_TWEETER, crossover::BAND_CROSSOVER_START, fs, no_boost);
+  CHECK(near(db(response(hp, 2000.0, fs)), -3.0103, 0.01), "tweeter high-pass sits at the minimum");
+  m.frequency = 3000.0f;
+  CHECK(crossover::effective_frequency(m) == 3000.0f, "frequency above minimum unchanged");
+
+  // peak gain: flat chain is 0dB, +6dB baffle step on the mid shows up, gain trim included on request
+  crossover::Settings p;
+  CHECK(near(crossover::chain_peak_db(p, crossover::ROLE_MID, fs, no_boost, true), 0.0, 0.05), "flat mid peak 0dB");
+  p.baffle_width_cm = 20.0f;
+  p.driver[crossover::ROLE_MID].gain_db = -2.0f;
+  const float filters = crossover::chain_peak_db(p, crossover::ROLE_MID, fs, no_boost, false);
+  const float total = crossover::chain_peak_db(p, crossover::ROLE_MID, fs, no_boost, true);
+  CHECK(near(filters, 6.0, 0.1), "mid filter peak with baffle step %.2fdB", filters);
+  CHECK(near(total, 4.0, 0.1), "mid total peak with -2dB trim %.2fdB", total);
+
+  // headroom compensation lowers the trim by the filter boost so the chain peaks at the user trim
+  CHECK(crossover::effective_gain_db(p, crossover::ROLE_MID, fs, no_boost) == -2.0f, "no compensation by default");
+  p.headroom_compensation = true;
+  const float comp = crossover::effective_gain_db(p, crossover::ROLE_MID, fs, no_boost);
+  CHECK(near(comp, -8.0, 0.1), "compensated mid trim %.2fdB", comp);
+  CHECK(near(crossover::chain_peak_db(p, crossover::ROLE_MID, fs, no_boost, true), -2.0, 0.1), "compensated mid peaks at trim");
+  // a cut never raises the gain
+  crossover::Settings c;
+  c.headroom_compensation = true;
+  c.driver[crossover::ROLE_TWEETER].peq[0] = {5000.0f, -6.0f, 1.0f, crossover::PEQ_PEAKING};
+  CHECK(crossover::effective_gain_db(c, crossover::ROLE_TWEETER, fs, no_boost) == 0.0f, "cuts do not raise gain");
+}
+
 int main() {
   test_lr4_2500hz_reference();
   test_crossover_responses();
@@ -374,6 +431,7 @@ int main() {
   test_chain();
   test_loudness();
   test_speaker_compensation();
+  test_linkwitz_and_headroom();
 
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

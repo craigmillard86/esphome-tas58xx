@@ -93,6 +93,21 @@ Coefficients high_shelf(double fc, double gain_db, double q, double fs) {
                    (a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha);
 }
 
+Coefficients linkwitz_transform(double f0, double q0, double fp, double qp, double fs) {
+  if (!valid_frequency(f0, fs) || !valid_frequency(fp, fs) || q0 <= 0.0 || qp <= 0.0) return passthrough();
+
+  // H(s) = (s^2 + (w0/q0)s + w0^2) / (s^2 + (wp/qp)s + wp^2), bilinear transform
+  // pre-warped at the mean of the two frequencies (Linkwitz, linkwitzlab.com)
+  const double w0 = 2.0 * PI * f0;
+  const double wp = 2.0 * PI * fp;
+  const double fc = (f0 + fp) / 2.0;
+  const double k = 2.0 * PI * fc / std::tan(PI * fc / fs);
+  const double k2 = k * k;
+
+  return normalise(w0 * w0 + k * w0 / q0 + k2, 2.0 * (w0 * w0 - k2), w0 * w0 - k * w0 / q0 + k2,
+                   wp * wp + k * wp / qp + k2, 2.0 * (wp * wp - k2), wp * wp - k * wp / qp + k2);
+}
+
 Coefficients allpass_delay(double delay_mm, double fs) {
   if (delay_mm <= 0.0 || fs <= 0.0) return passthrough();
 

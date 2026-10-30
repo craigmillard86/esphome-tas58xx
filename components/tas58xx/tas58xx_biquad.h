@@ -36,6 +36,10 @@ Coefficients peaking(double fc, double gain_db, double q, double fs);
 Coefficients low_shelf(double fc, double gain_db, double q, double fs);
 Coefficients high_shelf(double fc, double gain_db, double q, double fs);
 
+// Linkwitz transform: moves a sealed box response from resonance f0/q0 to a target fp/qp
+// low frequency gain is (f0/fp)^2, high frequencies are unchanged
+Coefficients linkwitz_transform(double f0, double q0, double fp, double qp, double fs);
+
 // 1st order all-pass whose group delay at low frequencies is delay_mm / speed of sound.
 // Only an approximation of a true delay: group delay falls off above ~1/(pi*T).
 Coefficients allpass_delay(double delay_mm, double fs);

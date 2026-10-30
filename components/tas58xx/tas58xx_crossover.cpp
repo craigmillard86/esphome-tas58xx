@@ -1,6 +1,7 @@
 #include "tas58xx_crossover.h"
 
 #include <cmath>
+#include <complex>
 
 namespace esphome::tas58xx::crossover {
 
@@ -98,13 +99,49 @@ static biquad::Coefficients peq_coefficients(const PeqBand &peq, float fs) {
   }
 }
 
+float effective_frequency(const Settings &settings) {
+  const float minimum = clampf(settings.frequency_min, FREQUENCY_MIN, FREQUENCY_MAX);
+  return clampf(settings.frequency, minimum, FREQUENCY_MAX);
+}
+
+float chain_peak_db(const Settings &settings, DriverRole role, float fs, const LoudnessBoost &loudness, bool include_gain_band) {
+  biquad::Coefficients bands[NUMBER_BANDS];
+  for (uint8_t band = 0; band < NUMBER_BANDS; band++) {
+    bands[band] = (band == BAND_GAIN && !include_gain_band) ? biquad::passthrough()
+                                                             : band_coefficients(settings, role, band, fs, loudness);
+  }
+
+  float peak = 0.0f;
+  for (float f = PEAK_SEARCH_START; f <= PEAK_SEARCH_STOP; f *= PEAK_SEARCH_STEP) {
+    const std::complex<float> z1 = std::polar(1.0f, -2.0f * PI_F * f / fs);
+    const std::complex<float> z2 = z1 * z1;
+    float magnitude = 1.0f;
+    for (const biquad::Coefficients &c : bands) {
+      const std::complex<float> num = static_cast<float>(c.b0) + static_cast<float>(c.b1) * z1 + static_cast<float>(c.b2) * z2;
+      const std::complex<float> den = 1.0f + static_cast<float>(c.a1) * z1 + static_cast<float>(c.a2) * z2;
+      magnitude *= std::abs(num) / std::abs(den);
+    }
+    if (magnitude > peak) peak = magnitude;
+  }
+  return 20.0f * std::log10(peak > 1e-9f ? peak : 1e-9f);
+}
+
+float effective_gain_db(const Settings &settings, DriverRole role, float fs, const LoudnessBoost &loudness) {
+  float gain_db = clampf(settings.driver[role].gain_db, DRIVER_GAIN_MIN_DB, DRIVER_GAIN_MAX_DB);
+  if (settings.headroom_compensation) {
+    const float boost = chain_peak_db(settings, role, fs, loudness, false);
+    if (boost > 0.0f) gain_db -= boost;
+  }
+  return gain_db;
+}
+
 biquad::Coefficients band_coefficients(const Settings &settings, DriverRole role, uint8_t band, float fs,
                                        const LoudnessBoost &loudness) {
   const DriverSettings &driver = settings.driver[role];
   const bool is_tweeter = (role == ROLE_TWEETER);
 
   if (band == BAND_GAIN) {
-    return biquad::gain(clampf(driver.gain_db, DRIVER_GAIN_MIN_DB, DRIVER_GAIN_MAX_DB), driver.invert);
+    return biquad::gain(effective_gain_db(settings, role, fs, loudness), driver.invert);
   }
 
   if (band == BAND_DELAY) {
@@ -112,7 +149,7 @@ biquad::Coefficients band_coefficients(const Settings &settings, DriverRole role
   }
 
   if (band >= BAND_CROSSOVER_START && band < BAND_CROSSOVER_START + BAND_CROSSOVER_COUNT) {
-    return crossover_section(settings.filter, is_tweeter, band - BAND_CROSSOVER_START, settings.frequency, fs);
+    return crossover_section(settings.filter, is_tweeter, band - BAND_CROSSOVER_START, effective_frequency(settings), fs);
   }
 
   if (band >= BAND_PEQ_START && band < BAND_PEQ_START + NUMBER_PEQ_BANDS) {
@@ -123,6 +160,14 @@ biquad::Coefficients band_coefficients(const Settings &settings, DriverRole role
     if (settings.subsonic_frequency < SUBSONIC_FREQUENCY_MIN) return biquad::passthrough();
     return biquad::highpass(clampf(settings.subsonic_frequency, SUBSONIC_FREQUENCY_MIN, SUBSONIC_FREQUENCY_MAX),
                             biquad::Q_BUTTERWORTH, fs);
+  }
+
+  if (band == BAND_LINKWITZ && !is_tweeter) {
+    if (settings.linkwitz_f0 < LINKWITZ_FREQUENCY_MIN || settings.linkwitz_fp < LINKWITZ_FREQUENCY_MIN) return biquad::passthrough();
+    return biquad::linkwitz_transform(clampf(settings.linkwitz_f0, LINKWITZ_FREQUENCY_MIN, LINKWITZ_FREQUENCY_MAX),
+                                      clampf(settings.linkwitz_q0, LINKWITZ_Q_MIN, LINKWITZ_Q_MAX),
+                                      clampf(settings.linkwitz_fp, LINKWITZ_FREQUENCY_MIN, LINKWITZ_FREQUENCY_MAX),
+                                      clampf(settings.linkwitz_qp, LINKWITZ_Q_MIN, LINKWITZ_Q_MAX), fs);
   }
 
   if (band == BAND_BAFFLE_STEP && !is_tweeter) {

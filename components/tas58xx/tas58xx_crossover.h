@@ -8,7 +8,7 @@
 //   band 1      delay (1st order all-pass approximation)
 //   bands 2-3   crossover sections (high-pass for tweeter, low-pass for mid), unused ones passthrough
 //   band 4      mid: subsonic high-pass       tweeter: passthrough
-//   band 5      spare, passthrough
+//   band 5      mid: Linkwitz transform       tweeter: passthrough
 //   bands 6-11  parametric EQ, 6 bands
 //   band 12     mid: baffle step low shelf    tweeter: breakup notch
 //   band 13     mid: loudness bass shelf      tweeter: air high shelf
@@ -56,6 +56,7 @@ static constexpr uint8_t BAND_DELAY = 1;
 static constexpr uint8_t BAND_CROSSOVER_START = 2;
 static constexpr uint8_t BAND_CROSSOVER_COUNT = 2;  // LR4 and BW4 need 2 sections
 static constexpr uint8_t BAND_SUBSONIC = 4;          // on mid driver
+static constexpr uint8_t BAND_LINKWITZ = 5;          // on mid driver
 static constexpr uint8_t BAND_PEQ_START = 6;
 static constexpr uint8_t BAND_BAFFLE_STEP = 12;      // on mid driver
 static constexpr uint8_t BAND_NOTCH = 12;            // on tweeter driver
@@ -92,6 +93,17 @@ static constexpr float NOTCH_GAIN_MIN_DB = -24.0f;
 static constexpr float NOTCH_Q_MIN = 0.5f;
 static constexpr float NOTCH_Q_MAX = 20.0f;
 
+// Linkwitz transform on the mid driver, f0 or fp 0 is off
+static constexpr float LINKWITZ_FREQUENCY_MIN = 15.0f;
+static constexpr float LINKWITZ_FREQUENCY_MAX = 200.0f;
+static constexpr float LINKWITZ_Q_MIN = 0.3f;
+static constexpr float LINKWITZ_Q_MAX = 2.0f;
+
+// peak gain is searched from 20Hz to 20kHz in 1/24 octave steps
+static constexpr float PEAK_SEARCH_START = 20.0f;
+static constexpr float PEAK_SEARCH_STOP = 20000.0f;
+static constexpr float PEAK_SEARCH_STEP = 1.0293022366f;  // 2^(1/24)
+
 // air / brilliance high shelf on the tweeter at a fixed 10kHz corner
 static constexpr float AIR_FREQUENCY = 10000.0f;
 static constexpr float AIR_GAIN_MAX_DB = 6.0f;
@@ -122,6 +134,7 @@ struct DriverSettings {
 struct Settings {
   CrossoverFilter filter{FILTER_LR4};
   float frequency{2500.0f};
+  float frequency_min{FREQUENCY_MIN};  // YAML limit to protect the tweeter, crossover never goes below it
   DriverSettings driver[NUMBER_ROLES];
   bool loudness{false};
   float loudness_reference_db{0.0f};
@@ -133,6 +146,14 @@ struct Settings {
   float notch_gain_db{0.0f};
   float notch_q{5.0f};
   float air_gain_db{0.0f};         // tweeter, 0 is off
+
+  float linkwitz_f0{0.0f};         // mid, measured box resonance, 0 is off
+  float linkwitz_q0{0.707f};
+  float linkwitz_fp{0.0f};         // mid, target resonance, 0 is off
+  float linkwitz_qp{0.5f};
+
+  // lower each driver's gain trim by the peak boost of its filters so the DSP cannot clip
+  bool headroom_compensation{false};
 };
 
 struct BaffleStep {
@@ -156,6 +177,16 @@ BaffleStep baffle_step(float width_cm, BafflePlacement placement);
 
 // loudness boost at a digital volume, quantised to LOUDNESS_STEP_DB
 LoudnessBoost loudness_boost(const Settings &settings, float volume_db);
+
+// crossover frequency after the YAML minimum and the supported range are applied
+float effective_frequency(const Settings &settings);
+
+// highest gain of a driver's chain from 20Hz to 20kHz in dB
+// include_gain_band false leaves out band 0 (gain trim), used for headroom compensation
+float chain_peak_db(const Settings &settings, DriverRole role, float fs, const LoudnessBoost &loudness, bool include_gain_band);
+
+// gain trim actually written to band 0, after headroom compensation
+float effective_gain_db(const Settings &settings, DriverRole role, float fs, const LoudnessBoost &loudness);
 
 // coefficients for one band of one driver
 biquad::Coefficients band_coefficients(const Settings &settings, DriverRole role, uint8_t band, float fs,
