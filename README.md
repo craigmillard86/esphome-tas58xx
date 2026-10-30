@@ -453,7 +453,7 @@ Each output channel has 15 biquad filters. EQ Crossover uses them like this:
 | 2     | Delay | Delay |
 | 3-4   | High-pass crossover | Low-pass crossover |
 | 5     | Not used | Subsonic high-pass |
-| 6     | Not used | Not used |
+| 6     | Not used | Linkwitz transform |
 | 7-12  | 6 parametric EQ bands | 6 parametric EQ bands |
 | 13    | Breakup notch | Baffle step low shelf |
 | 14    | Air shelf (10 kHz) | Loudness bass shelf (200 Hz) |
@@ -466,6 +466,8 @@ Filter types:
 - **BW4**: Butterworth, 24 dB/octave. Both outputs are -3 dB at the crossover.
 
 The crossover frequency can be 500 Hz to 8 kHz.
+Set **tweeter_min_frequency** to protect the tweeter. The crossover never goes below it,
+and the Crossover Frequency number in Home Assistant starts at that value.
 
 Each driver has 6 parametric EQ bands. Each band has a frequency (20 Hz to 20 kHz),
 a gain (-15 dB to +15 dB), a Q (0.1 to 10) and a type (Peaking, Low Shelf or High Shelf).
@@ -491,6 +493,47 @@ None of them can remove the tweeter high-pass, so they are changed while playing
   The gain must be below 0 dB (down to -24 dB). A boost is ignored. Q is 0.5 to 20, default 5.
   Typical: aluminium dome 20-25 kHz at Q 5-10, silk dome 15-18 kHz at Q 3-5.
 - **Air shelf** (tweeter): a high shelf at a fixed 10 kHz corner, -6 dB to +6 dB.
+- **Linkwitz transform** (mid): extends the bass of a sealed box.
+  Set the box resonance **f0** and **q0** you measured, and the target **fp** and **qp** you want.
+  The bass boost below resonance is (f0 / fp)², for example 80 Hz to 50 Hz is +8.2 dB.
+  Use it together with the subsonic filter, and watch the mid driver's excursion.
+  Setting f0 or fp to 0 turns it off.
+
+### Headroom
+Boosts add up. Baffle step, Linkwitz transform, loudness and PEQ boosts can lift a driver's chain above 0 dB.
+A full scale signal can then clip inside the DSP.
+- The **tweeter_peak_gain** and **mid_peak_gain** sensors show the highest gain of each driver's chain
+  from 20 Hz to 20 kHz. Above 0 dB the component also logs a warning.
+- **headroom_compensation** lowers each driver's gain trim by the boost of its filters,
+  so the chain never peaks above the gain you set. Loudness boost is included, so the level
+  changes a little with volume when loudness is on.
+
+Mixer mode MONO already halves each input (-6 dB) before the DSP, which gives some headroom for boosts.
+
+### Measuring each driver
+**tweeter_mute** and **mid_mute** switches mute one driver so you can measure or listen to the other.
+They always start off after a reboot.
+
+### Copying a tuning to another cabinet
+1. Press **Export Crossover to Log** (**crossover_export**). The current settings are printed in the log
+   as a **crossover:** block.
+2. Paste that block into the YAML of the other cabinets, or into a shared package used by all of them. Flash them.
+3. Press **Reset Crossover to YAML** (**crossover_reset**) on each cabinet. Saved Home Assistant values
+   are replaced by the YAML values.
+
+### Stereo pair
+One board drives one cabinet. For a stereo pair use **mixer_mode: LEFT** on the left cabinet and
+**mixer_mode: RIGHT** on the right cabinet, instead of MONO. Each board then sends one channel of the
+stereo signal to both of its drivers. Both cabinets can share the same **crossover:** block.
+
+### Delay and true time alignment
+The delay setting is a 1st order all-pass filter, not a true delay line.
+This is a hardware limit with the startup used by this component:
+- TAS5805M has no delay block in any of its process flows (TI SLOA263A, "TAS5805M, TAS5806M and TAS5806MD Process Flows").
+- TAS5825M has per-channel sample delays only in its 48 kHz flows, for example the FIR flow with up to 50 samples
+  (TI SLAA786A, "TAS5825M Process Flows"). This component loads the 96 kHz flow, which has none.
+
+For large driver offsets, a stepped baffle or setting the tweeter back is more accurate.
 
 ### Fail-safe: the tweeter never plays full range
 A tweeter can be damaged by full range audio. EQ Crossover protects it like this:
@@ -568,6 +611,8 @@ audio_dac:
 Configuration variables under **crossover:** (all optional):
 - **filter:** LR2, LR4, BW2 or BW4. Defaults to LR4.
 - **frequency:** 500Hz to 8000Hz. Defaults to 2500Hz.
+- **tweeter_min_frequency:** 500Hz to 8000Hz. The crossover never goes below it. Defaults to 500Hz.
+  **frequency:** must not be below it.
 - **tweeter_channel:** LEFT or RIGHT. The other channel is the mid. Defaults to LEFT.
 - **tweeter_gain:** and **mid_gain:** -24dB to 6dB. Defaults to 0dB.
 - **tweeter_invert:** and **mid_invert:** invert the polarity of that driver. Defaults to false.
@@ -581,6 +626,9 @@ Configuration variables under **crossover:** (all optional):
 - **tweeter_notch:** **frequency:** 0Hz (off) or 1000Hz to 24000Hz (default 0Hz),
   **gain:** -24dB to 0dB (default 0dB, off) and **q:** 0.5 to 20 (default 5.0).
 - **air_gain:** -6dB to 6dB. Defaults to 0dB.
+- **linkwitz:** **f0:** and **fp:** 0Hz (off) or 15Hz to 200Hz (default 0Hz),
+  **q0:** 0.3 to 2 (default 0.707) and **qp:** 0.3 to 2 (default 0.5).
+- **headroom_compensation:** true or false. Defaults to false.
 - **loudness:** turn loudness on. Defaults to false.
 - **loudness_reference:** -60dB to 0dB. Defaults to 0dB.
 - **dsp_sample_rate:** 96000Hz or 48000Hz. Defaults to 96000Hz. See "DSP sample rate" above.
@@ -638,6 +686,14 @@ number:
       name: Tweeter Notch Q
     air_gain:
       name: Air Shelf Gain
+    linkwitz_f0:
+      name: Linkwitz Box f0
+    linkwitz_q0:
+      name: Linkwitz Box Q0
+    linkwitz_fp:
+      name: Linkwitz Target fp
+    linkwitz_qp:
+      name: Linkwitz Target Qp
     tweeter_peq_1_frequency:   # tweeter_peq_1_ to tweeter_peq_6_
       name: Tweeter PEQ 1 Frequency
     tweeter_peq_1_gain:
@@ -662,6 +718,33 @@ switch:
       name: Mid Invert Polarity
     loudness:
       name: Loudness
+    tweeter_mute:
+      name: Mute Tweeter
+    mid_mute:
+      name: Mute Mid
+    headroom_compensation:
+      name: Headroom Compensation
+```
+
+Buttons:
+```
+button:
+  - platform: tas58xx
+    crossover_export:
+      name: Export Crossover to Log
+    crossover_reset:
+      name: Reset Crossover to YAML
+```
+
+Sensors (diagnostic, updated at the sensor **update_interval:**):
+```
+sensor:
+  - platform: tas58xx
+    tweeter_peak_gain:
+      name: Tweeter Peak Gain
+    mid_peak_gain:
+      name: Mid Peak Gain
+    update_interval: 10s
 ```
 
 The existing **channel_volume_left:** and **channel_volume_right:** numbers still work with EQ Crossover.

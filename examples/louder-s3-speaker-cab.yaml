@@ -5,6 +5,7 @@
 #   Left output  -> tweeter  (Dayton DC28FT)      high-pass
 #   Right output -> mid/bass (Tectonic TCP115)    low-pass
 # Mixer mode MONO feeds both outputs with L+R, so one cabinet plays the full mix.
+# For a stereo pair of cabinets use mixer_mode: LEFT on one board and RIGHT on the other.
 #
 # Board pins are from Sonocotta's esp32-audio-dock firmware
 # (firmware/esphome/3-louder-esp32/louder-esp32-s3-idf-sendspin.yaml).
@@ -141,6 +142,9 @@ audio_dac:
     crossover:
       filter: LR4             # LR2, LR4, BW2 or BW4
       frequency: 2500Hz
+      # the crossover can never go below this, also in Home Assistant
+      # set it from the tweeter datasheet, 1800Hz is a cautious value for a 28mm dome
+      tweeter_min_frequency: 1800Hz
       tweeter_channel: LEFT   # DC28FT on the left output, TCP115 on the right
       tweeter_gain: -3dB
       mid_gain: 0dB
@@ -155,6 +159,12 @@ audio_dac:
         gain: 0dB
         q: 5.0
       air_gain: 0dB               # tweeter high shelf at 10kHz
+      linkwitz:                   # sealed box bass extension, set f0/q0 from a measurement
+        f0: 0Hz
+        q0: 0.707
+        fp: 0Hz
+        qp: 0.5
+      headroom_compensation: false
 
 select:
   - platform: tas58xx
@@ -203,6 +213,14 @@ number:
       name: Tweeter Notch Q
     air_gain:
       name: Air Shelf Gain
+    linkwitz_f0:
+      name: Linkwitz Box f0
+    linkwitz_q0:
+      name: Linkwitz Box Q0
+    linkwitz_fp:
+      name: Linkwitz Target fp
+    linkwitz_qp:
+      name: Linkwitz Target Qp
     # Two of the six PEQ bands per driver are shown here. Add tweeter_peq_3_* to _6_* the same way.
     tweeter_peq_1_frequency:
       name: Tweeter PEQ 1 Frequency
@@ -241,6 +259,19 @@ switch:
       name: Mid Invert Polarity
     loudness:
       name: Loudness
+    tweeter_mute:
+      name: Mute Tweeter
+    mid_mute:
+      name: Mute Mid
+    headroom_compensation:
+      name: Headroom Compensation
+
+button:
+  - platform: tas58xx
+    crossover_export:
+      name: Export Crossover to Log
+    crossover_reset:
+      name: Reset Crossover to YAML
 
 binary_sensor:
   - platform: tas58xx
@@ -258,6 +289,11 @@ sensor:
   - platform: tas58xx
     faults_cleared:
       name: Times Faults Cleared
+    tweeter_peak_gain:
+      name: Tweeter Peak Gain
+    mid_peak_gain:
+      name: Mid Peak Gain
+    update_interval: 10s
 
 # ===== Audio pipeline =====
 i2s_audio:
