@@ -372,6 +372,11 @@ void Tas58xxComponent::dump_config() {
 
 // used by 'enable_dac_switch'
 void Tas58xxComponent::enable_dac(bool enable) {
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // wake muted so the tweeter stays silent until the crossover has been re-verified
+  if (enable && this->loop_setup_stage_ >= CROSSOVER_SETUP &&
+      this->tas58xx_control_state_ == CTRL_DEEP_SLEEP) this->safety_mute_ = true;
+#endif
   enable ? this->set_deep_sleep_off_() : this->set_deep_sleep_on_();
 
 #ifdef USE_TAS58XX_EQ_CROSSOVER
