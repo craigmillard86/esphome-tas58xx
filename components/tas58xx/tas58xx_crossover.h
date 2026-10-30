@@ -99,8 +99,9 @@ static constexpr float LINKWITZ_FREQUENCY_MAX = 200.0f;
 static constexpr float LINKWITZ_Q_MIN = 0.3f;
 static constexpr float LINKWITZ_Q_MAX = 2.0f;
 
-// peak gain is searched from 20Hz to 20kHz in 1/24 octave steps
-static constexpr float PEAK_SEARCH_START = 20.0f;
+// peak gain is searched from 5Hz to 20kHz (or just below Nyquist) in 1/24 octave steps
+// starting below 20Hz finds the Linkwitz transform boost, which keeps rising towards DC
+static constexpr float PEAK_SEARCH_START = 5.0f;
 static constexpr float PEAK_SEARCH_STOP = 20000.0f;
 static constexpr float PEAK_SEARCH_STEP = 1.0293022366f;  // 2^(1/24)
 
@@ -181,7 +182,7 @@ LoudnessBoost loudness_boost(const Settings &settings, float volume_db);
 // crossover frequency after the YAML minimum and the supported range are applied
 float effective_frequency(const Settings &settings);
 
-// highest gain of a driver's chain from 20Hz to 20kHz in dB
+// highest gain of a driver's chain from 5Hz to 20kHz in dB
 // include_gain_band false leaves out band 0 (gain trim), used for headroom compensation
 float chain_peak_db(const Settings &settings, DriverRole role, float fs, const LoudnessBoost &loudness, bool include_gain_band);
 

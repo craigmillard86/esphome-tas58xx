@@ -327,6 +327,8 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
    float xover_dsp_sample_rate_{96000.0f};         // DSP processing rate set by register 0x46 in tas58xx_minimal.h
    float xover_volume_db_{0.0f};                   // last digital volume from 'set_volume', drives loudness
    crossover::LoudnessBoost xover_loudness_applied_;
+   float xover_peak_db_[crossover::NUMBER_ROLES]{};  // cached for the peak gain sensors
+   bool xover_peak_valid_{false};                  // cleared whenever settings or loudness change
 
    CrossoverStep xover_step_{XO_IDLE};
    bool xover_pending_{false};        // a full apply has been requested

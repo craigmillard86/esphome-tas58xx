@@ -1086,6 +1086,7 @@ void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, u
     ESP_LOGE(TAG, "Invalid %s role:%d band:%d", CROSSOVER, role, band);
     return;
   }
+  this->xover_peak_valid_ = false;
   const crossover::DriverRole driver_role = static_cast<crossover::DriverRole>(role);
   crossover::DriverSettings &driver = this->xover_.driver[role];
   crossover::PeqBand &peq = driver.peq[band];
@@ -1318,6 +1319,7 @@ bool Tas58xxComponent::crossover_loop_() {
     case XO_WRITE_MODE:
       this->xover_verify_only_ = false;
       this->xover_loudness_applied_ = crossover::loudness_boost(this->xover_, this->xover_volume_db_);
+      this->xover_peak_valid_ = false;
       if (!this->write_eq_mode_register_(this->tas58xx_eq_mode_)) {
         this->crossover_step_failed_("EQ mode write");
         return true;
@@ -1545,13 +1547,21 @@ void Tas58xxComponent::write_gain_bands_if_compensated_() {
 
 float Tas58xxComponent::get_crossover_peak_db(uint8_t role) {
   if (role >= crossover::NUMBER_ROLES) return 0.0f;
-  return crossover::chain_peak_db(this->xover_, static_cast<crossover::DriverRole>(role), this->xover_dsp_sample_rate_,
-                                  this->xover_loudness_applied_, true);
+  // the search costs a few thousand complex evaluations, only redo it after a change
+  if (!this->xover_peak_valid_) {
+    for (uint8_t r = 0; r < crossover::NUMBER_ROLES; r++) {
+      this->xover_peak_db_[r] = crossover::chain_peak_db(this->xover_, static_cast<crossover::DriverRole>(r),
+                                                         this->xover_dsp_sample_rate_, this->xover_loudness_applied_, true);
+    }
+    this->xover_peak_valid_ = true;
+  }
+  return this->xover_peak_db_[role];
 }
 
 void Tas58xxComponent::reset_crossover_settings() {
   ESP_LOGI(TAG, "%s settings reset to YAML values", CROSSOVER);
   this->xover_ = this->xover_defaults_;
+  this->xover_peak_valid_ = false;
   this->xover_tweeter_channel_ = this->xover_default_tweeter_channel_;
   // entities show and save the YAML values again
   for (auto &listener : this->xover_listeners_) listener();
@@ -1630,6 +1640,7 @@ void Tas58xxComponent::update_loudness_() {
   if ((boost.bass_db == this->xover_loudness_applied_.bass_db) && (boost.treble_db == this->xover_loudness_applied_.treble_db)) return;
 
   this->xover_loudness_applied_ = boost;
+  this->xover_peak_valid_ = false;
   ESP_LOGD(TAG, "Loudness at %.1fdB: Bass +%.1fdB Treble +%.1fdB", this->xover_volume_db_, boost.bass_db, boost.treble_db);
 
   if (!this->write_crossover_band_(crossover::ROLE_MID, crossover::BAND_LOUDNESS_BASS) ||

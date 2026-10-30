@@ -1,5 +1,6 @@
 #include "tas58xx_crossover.h"
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
@@ -111,8 +112,9 @@ float chain_peak_db(const Settings &settings, DriverRole role, float fs, const L
                                                              : band_coefficients(settings, role, band, fs, loudness);
   }
 
+  const float stop = std::min(PEAK_SEARCH_STOP, 0.49f * fs);
   float peak = 0.0f;
-  for (float f = PEAK_SEARCH_START; f <= PEAK_SEARCH_STOP; f *= PEAK_SEARCH_STEP) {
+  for (float f = PEAK_SEARCH_START; f <= stop; f *= PEAK_SEARCH_STEP) {
     const std::complex<float> z1 = std::polar(1.0f, -2.0f * PI_F * f / fs);
     const std::complex<float> z2 = z1 * z1;
     float magnitude = 1.0f;
