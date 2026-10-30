@@ -1300,9 +1300,15 @@ bool Tas58xxComponent::crossover_loop_() {
   switch (this->xover_step_) {
     case XO_IDLE:
       if (!this->xover_pending_) return false;
+      if (this->xover_wait_loops_ > 0) {
+        this->xover_wait_loops_--;
+        return true;
+      }
       if (!this->set_safety_mute_(true)) {
-        ESP_LOGW(TAG, "%s %s setting safety mute", ERROR, CROSSOVER);
-        return true; // try again next loop
+        this->xover_failures_++;
+        ESP_LOGW(TAG, "%s %s setting safety mute, retry %d", ERROR, CROSSOVER, this->xover_failures_);
+        this->xover_wait_loops_ = RETRY_INTERVAL;
+        return true;
       }
       this->xover_pending_ = false;
       this->xover_applied_ = false;
