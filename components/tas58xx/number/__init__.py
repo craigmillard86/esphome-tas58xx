@@ -5,9 +5,13 @@ import esphome.final_validate as fv
 
 from esphome.const import (
     CONF_PLATFORM,
+    DEVICE_CLASS_DISTANCE,
+    DEVICE_CLASS_FREQUENCY,
     DEVICE_CLASS_SOUND_PRESSURE,
     ENTITY_CATEGORY_CONFIG,
     UNIT_DECIBEL,
+    UNIT_HERTZ,
+    UNIT_MILLIMETER,
 )
 
 SELECT_COMPONENT = "select"
@@ -51,7 +55,15 @@ CONF_RIGHT_EQ_GAIN_16000HZ = "right_eq_gain_16000Hz"
 
 ICON_VOLUME_SOURCE = "mdi:volume-source"
 
-from ..audio_dac import CONF_TAS58XX_ID, Tas58xxComponent, tas58xx_ns
+from ..audio_dac import (
+    CONF_TAS58XX_ID,
+    NUMBER_PEQ_BANDS,
+    ROLE_MID,
+    ROLE_TWEETER,
+    Tas58xxComponent,
+    tas58xx_ns,
+    validate_crossover_entities,
+)
 
 ChannelVolumeLeft = tas58xx_ns.class_("ChannelVolumeLeft", number.Number, cg.Component)
 ChannelVolumeRight = tas58xx_ns.class_("ChannelVolumeRight", number.Number, cg.Component)
@@ -87,6 +99,45 @@ RightEqGain3150hz = tas58xx_ns.class_("RightEqGain3150hz", number.Number, cg.Com
 RightEqGain5000hz = tas58xx_ns.class_("RightEqGain5000hz", number.Number, cg.Component)
 RightEqGain8000hz = tas58xx_ns.class_("RightEqGain8000hz", number.Number, cg.Component)
 RightEqGain16000hz = tas58xx_ns.class_("RightEqGain16000hz", number.Number, cg.Component)
+
+# crossover numbers, all need audio_dac crossover:
+# key: (C++ CrossoverParam, driver role, PEQ band, min, max, step, unit, device class, icon)
+CrossoverNumber = tas58xx_ns.class_("CrossoverNumber", number.Number, cg.Component)
+CrossoverParam = tas58xx_ns.enum("CrossoverParam")
+
+ICON_SINE_WAVE = "mdi:sine-wave"
+ICON_TIMER = "mdi:timer-outline"
+ICON_TUNE = "mdi:tune-variant"
+
+CROSSOVER_NUMBERS = {
+    "crossover_frequency": ("XO_PARAM_FREQUENCY", ROLE_TWEETER, 0, 500, 8000, 10, UNIT_HERTZ, DEVICE_CLASS_FREQUENCY, ICON_SINE_WAVE),
+    "tweeter_gain": ("XO_PARAM_GAIN", ROLE_TWEETER, 0, -24, 6, 0.5, UNIT_DECIBEL, DEVICE_CLASS_SOUND_PRESSURE, ICON_VOLUME_SOURCE),
+    "mid_gain": ("XO_PARAM_GAIN", ROLE_MID, 0, -24, 6, 0.5, UNIT_DECIBEL, DEVICE_CLASS_SOUND_PRESSURE, ICON_VOLUME_SOURCE),
+    "tweeter_delay": ("XO_PARAM_DELAY", ROLE_TWEETER, 0, 0, 50, 1, UNIT_MILLIMETER, DEVICE_CLASS_DISTANCE, ICON_TIMER),
+    "mid_delay": ("XO_PARAM_DELAY", ROLE_MID, 0, 0, 50, 1, UNIT_MILLIMETER, DEVICE_CLASS_DISTANCE, ICON_TIMER),
+    "loudness_reference": ("XO_PARAM_LOUDNESS_REFERENCE", ROLE_TWEETER, 0, -60, 0, 1, UNIT_DECIBEL, DEVICE_CLASS_SOUND_PRESSURE, ICON_VOLUME_SOURCE),
+}
+for _role, _prefix in ((ROLE_TWEETER, "tweeter"), (ROLE_MID, "mid")):
+    for _band in range(NUMBER_PEQ_BANDS):
+        _key = f"{_prefix}_peq_{_band + 1}"
+        CROSSOVER_NUMBERS[f"{_key}_frequency"] = ("XO_PARAM_PEQ_FREQUENCY", _role, _band, 20, 20000, 1, UNIT_HERTZ, DEVICE_CLASS_FREQUENCY, ICON_SINE_WAVE)
+        CROSSOVER_NUMBERS[f"{_key}_gain"] = ("XO_PARAM_PEQ_GAIN", _role, _band, -15, 15, 0.5, UNIT_DECIBEL, DEVICE_CLASS_SOUND_PRESSURE, ICON_TUNE)
+        CROSSOVER_NUMBERS[f"{_key}_q"] = ("XO_PARAM_PEQ_Q", _role, _band, 0.1, 10, 0.05, None, None, ICON_TUNE)
+
+def _crossover_number_schema(unit, device_class, icon):
+    kwargs = {"entity_category": ENTITY_CATEGORY_CONFIG, "icon": icon}
+    if unit is not None:
+        kwargs["unit_of_measurement"] = unit
+    if device_class is not None:
+        kwargs["device_class"] = device_class
+    return number.number_schema(CrossoverNumber, **kwargs).extend(cv.COMPONENT_SCHEMA)
+
+CROSSOVER_NUMBERS_SCHEMA = cv.Schema(
+    {
+        cv.Optional(key): _crossover_number_schema(unit, device_class, icon)
+        for key, (_, _, _, _, _, _, unit, device_class, icon) in CROSSOVER_NUMBERS.items()
+    }
+)
 
 def validate_eq_gain_numbers(config):
     have_at_least_one_left_gain = (CONF_LEFT_EQ_GAIN_20HZ in config or
@@ -173,6 +224,8 @@ def _final_validate(config):
 
     if (have_defined_tas58xx_number_eq_gains and have_defined_tas58xx_select_eq_preset):
         raise cv.Invalid("left_eq_gains and right_eq_gains are not allowed with Select eq_presets - remove one set of those configurations")
+
+    validate_crossover_entities(config, CROSSOVER_NUMBERS)
     return config
 
 FINAL_VALIDATE_SCHEMA = _final_validate
@@ -468,7 +521,7 @@ CONFIG_SCHEMA = cv.Schema(
         )
         .extend(cv.COMPONENT_SCHEMA),
     }
-).add_extra(validate_eq_gain_numbers)
+).extend(CROSSOVER_NUMBERS_SCHEMA).add_extra(validate_eq_gain_numbers)
 
 async def to_code(config):
     tas58xx_component = await cg.get_variable(config[CONF_TAS58XX_ID])
@@ -703,3 +756,10 @@ async def to_code(config):
         )
         await cg.register_component(n, right_gain_16000hz_config)
         await cg.register_parented(n, tas58xx_component)
+
+    for key, (param, role, band, min_value, max_value, step, *_) in CROSSOVER_NUMBERS.items():
+        if crossover_config := config.get(key):
+            n = await number.new_number(crossover_config, min_value=min_value, max_value=max_value, step=step)
+            await cg.register_component(n, crossover_config)
+            await cg.register_parented(n, tas58xx_component)
+            cg.add(n.set_crossover_param(getattr(CrossoverParam, param), role, band))

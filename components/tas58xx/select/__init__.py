@@ -8,12 +8,37 @@ from esphome.const import (
    ENTITY_CATEGORY_CONFIG,
 )
 
-from ..audio_dac import CONF_TAS58XX_ID, Tas58xxComponent, tas58xx_ns
+from ..audio_dac import (
+    CONF_TAS58XX_ID,
+    NUMBER_PEQ_BANDS,
+    ROLE_MID,
+    ROLE_TWEETER,
+    Tas58xxComponent,
+    tas58xx_ns,
+    validate_crossover_entities,
+)
 
 EqModeSelect = tas58xx_ns.class_("EqModeSelect", select.Select, cg.Component)
 MixerModeSelect = tas58xx_ns.class_("MixerModeSelect", select.Select, cg.Component)
 EqPresetLeftSelect = tas58xx_ns.class_("EqPresetLeftSelect", select.Select, cg.Component)
 EqPresetRightSelect = tas58xx_ns.class_("EqPresetRightSelect", select.Select, cg.Component)
+CrossoverSelect = tas58xx_ns.class_("CrossoverSelect", select.Select, cg.Component)
+CrossoverParam = tas58xx_ns.enum("CrossoverParam")
+
+# crossover selects, all need audio_dac crossover:
+# options are in the same order as the C++ enums in tas58xx_crossover.h
+# key: (C++ CrossoverParam, driver role, PEQ band, options)
+CROSSOVER_FILTER_OPTIONS = ["LR2 12dB/oct", "LR4 24dB/oct", "Butterworth 12dB/oct", "Butterworth 24dB/oct"]
+CROSSOVER_CHANNEL_OPTIONS = ["Left", "Right"]
+PEQ_TYPE_OPTIONS = ["Peaking", "Low Shelf", "High Shelf"]
+
+CROSSOVER_SELECTS = {
+    "crossover_filter": ("XO_PARAM_FILTER", ROLE_TWEETER, 0, CROSSOVER_FILTER_OPTIONS),
+    "crossover_tweeter_channel": ("XO_PARAM_TWEETER_CHANNEL", ROLE_TWEETER, 0, CROSSOVER_CHANNEL_OPTIONS),
+}
+for _role, _prefix in ((ROLE_TWEETER, "tweeter"), (ROLE_MID, "mid")):
+    for _band in range(NUMBER_PEQ_BANDS):
+        CROSSOVER_SELECTS[f"{_prefix}_peq_{_band + 1}_type"] = ("XO_PARAM_PEQ_TYPE", _role, _band, PEQ_TYPE_OPTIONS)
 
 CONF_EQ_MODE = "eq_mode"
 CONF_MIXER_MODE = "mixer_mode"
@@ -59,6 +84,14 @@ CONFIG_SCHEMA = cv.Schema(
             EqPresetRightSelect,
             entity_category=ENTITY_CATEGORY_CONFIG,
         ),
+        **{
+            cv.Optional(key): select.select_schema(
+                CrossoverSelect,
+                entity_category=ENTITY_CATEGORY_CONFIG,
+                icon="mdi:tune-variant",
+            ).extend(cv.COMPONENT_SCHEMA)
+            for key in CROSSOVER_SELECTS
+        },
     }
 ).add_extra(validate_eq_presets)
 
@@ -82,6 +115,7 @@ def _final_validate(config):
     if (not have_select_eq_mode and have_defined_tas58xx_number_eq_gain):
         raise cv.Invalid("Select eq_mode is required with Number left_eq_gains - add Select eq_mode to YAML configuration")
 
+    validate_crossover_entities(config, CROSSOVER_SELECTS)
     return config
 
 FINAL_VALIDATE_SCHEMA = _final_validate
@@ -120,3 +154,10 @@ async def to_code(config):
         )
         await cg.register_component(s, eq_preset_right_config)
         await cg.register_parented(s, tas58xx_component)
+
+    for key, (param, role, band, options) in CROSSOVER_SELECTS.items():
+        if crossover_config := config.get(key):
+            s = await select.new_select(crossover_config, options=options)
+            await cg.register_component(s, crossover_config)
+            await cg.register_parented(s, tas58xx_component)
+            cg.add(s.set_crossover_param(getattr(CrossoverParam, param), role, band))
