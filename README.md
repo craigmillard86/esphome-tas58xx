@@ -43,6 +43,7 @@ The component communicates with DAC by I2C and provides the following features:
 - set DAC mode
 - set Mixer mode
 - set EQ Control state and EQ gains
+- two-way active crossover with per-driver parametric EQ (EQ Crossover)
 - get fault states
 - automatically clear fault states
 - set Analog Gain
@@ -55,6 +56,7 @@ YAML configuration includes:
 - 2 optional Channel Volume Numbers to individually control the Channel Volumes
 - 2 optional Select for setting Mixer Mode and EQ Mode
 - 2 optional Select for each channel to set EQ High-pass and Low-pass filter presets
+- optional crossover Selects, Numbers and Switches for EQ Crossover
 - 12 optional Binary Sensors corresonding to DAC fault codes (all optional)
 - an optional Sensor providing the number of times a DAC fault was detected and DAC fault cleared
 
@@ -205,6 +207,9 @@ on_boot:
       id: external_media_player # speaker media player id
       media_url: file://startup_sync_sound
 ```
+Note: with ESPHome 2026.10 and the **speaker_source** media player used by Sendspin, the boot sound is
+an **audio_file:** with an **audio_file** media source, and the URL is **audio-file://startup_sync_sound**.
+See [examples/louder-s3-speaker-cab.yaml](examples/louder-s3-speaker-cab.yaml).
 Note: **audio_dac:** has an optional configuration variable called **refresh_eq:**
 The default configuration of **refresh_eq: AUTO** matches the above use case and
 therefore can be omitted from the **audio_dac:** YAML configuration.
@@ -309,6 +314,7 @@ The EQ Mode select option (in addition to Off) is determined based on the YAML c
 - 15 x Left EQ Gains configured -> **EQ 15 Band**
 - 15 x Left EQ Gains and 15 x Right EQ Gains configured -> **EQ BIAMP 15 Band**
 - EQ Preset Left Channel and EQ Preset Right Channel frequency cutoffs configured -> **EQ Presets**
+- **crossover:** configured under **audio_dac:** -> **EQ Crossover** (the EQ Mode select is optional)
 
 If the audio_dac: refresh_eq: option is MANUAL then on startup the EQ Mode Select is initially selected Off.
 Whereas, if audio_dac: option refresh_eq: AUTO then on startup the EQ Mode Select is initially selected the relevant Eq Mode.
@@ -426,6 +432,209 @@ select:
       name: EQ Preset Right Cutoff
 ```
 Note: Either EQ Presets OR EQ Gains can be configured not both.
+
+## EQ Crossover - Two-way active speaker
+EQ Crossover turns one board into a two-way active speaker.
+One output drives the tweeter. The other output drives the mid/bass driver.
+The DAC's DSP does the crossover, so no passive crossover is needed.
+
+The crossover works on both the TAS5805M and the TAS5825M.
+It needs **dac_mode: BTL**. Use **mixer_mode: MONO** so both drivers get the full L+R mix.
+
+It is enabled by adding a **crossover:** block under **audio_dac:**.
+EQ Crossover cannot be combined with EQ Gain Numbers or EQ Presets.
+
+### What it does
+Each output channel has 15 biquad filters. EQ Crossover uses them like this:
+
+| Bands | Tweeter channel | Mid channel |
+|-------|-----------------|-------------|
+| 1     | Gain trim and polarity | Gain trim and polarity |
+| 2     | Delay | Delay |
+| 3-6   | High-pass crossover | Low-pass crossover |
+| 7-12  | 6 parametric EQ bands | 6 parametric EQ bands |
+| 13    | Not used | Loudness bass shelf (200 Hz) |
+| 14    | Not used | Not used |
+| 15    | Loudness treble shelf (4 kHz) | Not used |
+
+Filter types:
+- **LR2**: Linkwitz-Riley, 12 dB/octave. Turn on **tweeter_invert** for a flat sum.
+- **LR4**: Linkwitz-Riley, 24 dB/octave. Both outputs are -6 dB at the crossover. This is the usual choice.
+- **BW2**: Butterworth, 12 dB/octave. Both outputs are -3 dB at the crossover.
+- **BW4**: Butterworth, 24 dB/octave. Both outputs are -3 dB at the crossover.
+
+The crossover frequency can be 500 Hz to 8 kHz.
+
+Each driver has 6 parametric EQ bands. Each band has a frequency (20 Hz to 20 kHz),
+a gain (-15 dB to +15 dB), a Q (0.1 to 10) and a type (Peaking, Low Shelf or High Shelf).
+A band with 0 dB gain does nothing.
+
+Delay is set as a distance in millimetres (0 to 50 mm). Use it when one driver's acoustic centre
+sits in front of the other. The DSP has no true delay line. The delay is a 1st order all-pass filter.
+It is accurate at low frequencies and gets less accurate above about 1/(π × delay).
+Check the result with a measurement.
+
+### Fail-safe: the tweeter never plays full range
+A tweeter can be damaged by full range audio. EQ Crossover protects it like this:
+- At boot the DAC is muted before any audio can play.
+- The component waits until the DAC reports a valid I2S clock. The DAC ignores DSP writes without a clock.
+- It writes all 15 biquads of both channels while the DAC is muted.
+- It reads the biquads back from the DAC. It only unmutes when the readback matches.
+- If any write or readback fails, the DAC stays muted. It tries again about every second and logs a warning.
+- Changing the tweeter channel or the EQ Mode repeats the whole sequence with the DAC muted.
+- Changing the filter type or frequency rewrites only the crossover bands. The tweeter stays on a high-pass the whole time. A failed write repeats the whole sequence with the DAC muted.
+- **EQ Mode Off** bypasses the DSP filters. In that case the tweeter channel gain is set to mute and read back before the DAC unmutes. Only the mid driver plays.
+- When the DAC wakes from sleep (Enable DAC switch On), the biquads are read back again while muted. They are rewritten if they differ.
+
+You may hear a short silence (about 0.2 s) when you change the tweeter channel or EQ Mode, or when playback starts after the DAC was asleep.
+
+Because the component waits for the I2S clock itself, **refresh_eq: AUTO** also works when audio
+only starts later, for example with a Snapcast client. A boot sound is still recommended so the
+crossover is ready before the first track. With **refresh_eq: MANUAL** an EQ Mode select is required.
+The DAC stays muted until you select EQ Crossover.
+
+### Loudness
+Loudness adds bass and treble when the volume is turned down. It is off by default.
+
+The boost starts below the **loudness_reference** volume. It grows to +6 dB bass and +4 dB treble
+at 30 dB below the reference. It is updated in 0.5 dB steps whenever the volume changes.
+The bass shelf is on the mid channel and the treble shelf is on the tweeter channel.
+
+### DSP sample rate
+The startup registers used by this component run the DSP at 96 kHz, even though I2S runs at 48 kHz.
+The 15-band EQ tables in this component are also designed for 96 kHz.
+So the crossover coefficients are calculated for 96 kHz by default.
+If a measurement shows the crossover at twice or half the set frequency,
+set **dsp_sample_rate** to the other value.
+
+### Crossover YAML configuration
+```
+audio_dac:
+  - platform: tas58xx
+    id: external_dac
+    tas58xx_dac: TAS5805M
+    enable_pin: GPIO17
+    dac_mode: BTL
+    mixer_mode: MONO
+    crossover:
+      filter: LR4
+      frequency: 2500Hz
+      tweeter_channel: LEFT
+      tweeter_gain: -3dB
+      mid_gain: 0dB
+      tweeter_invert: false
+      mid_invert: false
+      tweeter_delay: 0
+      mid_delay: 0
+      tweeter_peq:
+        - frequency: 12000Hz
+          gain: -2dB
+          q: 2.0
+          type: PEAKING
+      mid_peq:
+        - frequency: 200Hz
+          gain: 3dB
+          q: 0.7
+          type: LOW_SHELF
+      loudness: false
+      loudness_reference: 0dB
+```
+Configuration variables under **crossover:** (all optional):
+- **filter:** LR2, LR4, BW2 or BW4. Defaults to LR4.
+- **frequency:** 500Hz to 8000Hz. Defaults to 2500Hz.
+- **tweeter_channel:** LEFT or RIGHT. The other channel is the mid. Defaults to LEFT.
+- **tweeter_gain:** and **mid_gain:** -24dB to 6dB. Defaults to 0dB.
+- **tweeter_invert:** and **mid_invert:** invert the polarity of that driver. Defaults to false.
+- **tweeter_delay:** and **mid_delay:** 0 to 50 (mm). Defaults to 0.
+- **tweeter_peq:** and **mid_peq:** a list of up to 6 bands. Each band has
+  **frequency:** (default 1000Hz), **gain:** (default 0dB), **q:** (default 1.0) and
+  **type:** PEAKING, LOW_SHELF or HIGH_SHELF (default PEAKING).
+- **loudness:** turn loudness on. Defaults to false.
+- **loudness_reference:** -60dB to 0dB. Defaults to 0dB.
+- **dsp_sample_rate:** 96000Hz or 48000Hz. Defaults to 96000Hz. See "DSP sample rate" above.
+
+These values are used on first boot. If you also configure the entities below,
+changes made in Home Assistant are saved and restored at the next boot instead.
+
+### Crossover entities
+All crossover entities are optional. Configure only the ones you want to adjust from Home Assistant.
+They need **crossover:** under **audio_dac:**.
+
+Selects:
+```
+select:
+  - platform: tas58xx
+    eq_mode:
+      name: EQ Mode
+    crossover_filter:
+      name: Crossover Filter
+    crossover_tweeter_channel:
+      name: Tweeter Channel
+    tweeter_peq_1_type:        # up to tweeter_peq_6_type
+      name: Tweeter PEQ 1 Type
+    mid_peq_1_type:            # up to mid_peq_6_type
+      name: Mid PEQ 1 Type
+```
+
+Numbers:
+```
+number:
+  - platform: tas58xx
+    crossover_frequency:
+      name: Crossover Frequency
+    tweeter_gain:
+      name: Tweeter Gain
+    mid_gain:
+      name: Mid Gain
+    tweeter_delay:
+      name: Tweeter Delay
+    mid_delay:
+      name: Mid Delay
+    loudness_reference:
+      name: Loudness Reference
+    tweeter_peq_1_frequency:   # tweeter_peq_1_ to tweeter_peq_6_
+      name: Tweeter PEQ 1 Frequency
+    tweeter_peq_1_gain:
+      name: Tweeter PEQ 1 Gain
+    tweeter_peq_1_q:
+      name: Tweeter PEQ 1 Q
+    mid_peq_1_frequency:       # mid_peq_1_ to mid_peq_6_
+      name: Mid PEQ 1 Frequency
+    mid_peq_1_gain:
+      name: Mid PEQ 1 Gain
+    mid_peq_1_q:
+      name: Mid PEQ 1 Q
+```
+
+Switches:
+```
+switch:
+  - platform: tas58xx
+    tweeter_invert:
+      name: Tweeter Invert Polarity
+    mid_invert:
+      name: Mid Invert Polarity
+    loudness:
+      name: Loudness
+```
+
+The existing **channel_volume_left:** and **channel_volume_right:** numbers still work with EQ Crossover.
+They set the channel volume after the crossover. The tweeter channel volume is held at mute while the
+crossover is not in place, whatever the number is set to.
+
+### Example
+[examples/louder-s3-speaker-cab.yaml](examples/louder-s3-speaker-cab.yaml) is a complete configuration for a
+Louder ESP32-S3 (TAS5805M) driving one two-way cabinet with Sendspin.
+The tweeter is on the left output and the mid/bass on the right.
+It uses LR4 at 2500 Hz with the tweeter at -3 dB, a boot sound for Sendspin,
+and Ethernet (W5500) with Wi-Fi as fallback.
+
+### Unit tests
+The coefficient maths is plain C++ and has host unit tests. Run them with:
+```
+bash tests/run_tests.sh
+```
+They need a C++17 compiler. If none is installed, `pip install ziglang` provides one.
 
 
 ## DAC Enable Switch
