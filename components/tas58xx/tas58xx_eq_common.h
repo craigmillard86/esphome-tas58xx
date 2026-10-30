@@ -31,6 +31,7 @@ enum EqMode : uint8_t {
   EQ_15BAND_ON  = 1,
   EQ_BIAMP_ON   = 2,
   EQ_PRESETS_ON = 3,
+  EQ_CROSSOVER_ON = 4,
 };
 
 enum MixerMode : uint8_t {
@@ -43,9 +44,9 @@ enum MixerMode : uint8_t {
 
 static constexpr uint8_t NUMBER_CHANNELS = 2;
 static constexpr uint8_t NUMBER_EQ_BANDS = 15;
-static constexpr uint8_t NUMBER_EQ_MODES = 4;
+static constexpr uint8_t NUMBER_EQ_MODES = 5;
 
-static constexpr const char* EQ_MODE_TEXT[NUMBER_EQ_MODES]   = {"Off", "EQ 15 Band", "EQ BIAMP 15 Band", "EQ Presets"};
+static constexpr const char* EQ_MODE_TEXT[NUMBER_EQ_MODES]   = {"Off", "EQ 15 Band", "EQ BIAMP 15 Band", "EQ Presets", "EQ Crossover"};
 static constexpr const char* LR_CHANNEL_TEXT[NUMBER_CHANNELS] = {"Left", "Right"};
 static constexpr const char* MIXER_MODE_TEXT[] = {"STEREO", "STEREO_INVERSE", "MONO", "RIGHT", "LEFT"};
 
@@ -66,10 +67,10 @@ struct BiquadSequence {
 static constexpr uint8_t TAS58XX_EQ_CTRL_BOOK = 0xAA;
 
 // EQ mode coefficients equivalent to the indexes of the eq_modes
-// Off=Bypass EQ On + Ganged On; EQ 15 Band=Bypass EQ Off + Ganged On; EQ BIAMP 15 Band and EQ Presets=Bypass EQ Off + Ganged Off
+// Off=Bypass EQ On + Ganged On; EQ 15 Band=Bypass EQ Off + Ganged On; EQ BIAMP 15 Band, EQ Presets and EQ Crossover=Bypass EQ Off + Ganged Off
 #ifdef USE_TAS5805M_DAC
 static constexpr uint8_t TAS5805M_DSP_MISC = 0x66;
-static constexpr uint8_t TAS5805M_CTRL_EQ[NUMBER_EQ_MODES] = {0b0111, 0b0110, 0b1110, 0b1110};
+static constexpr uint8_t TAS5805M_CTRL_EQ[NUMBER_EQ_MODES] = {0b0111, 0b0110, 0b1110, 0b1110, 0b1110};
 #else
 static constexpr uint8_t TAS5825M_EQ_MODE_CTRL_PAGE = 0x0B;
 static constexpr uint8_t TAS5825M_GANG_EQ = 0x28; // TAS5825M_BYPASS_EQ = 0x2C;
@@ -86,6 +87,7 @@ static constexpr EqModeCoefficients TAS5825M_CTRL_EQ[NUMBER_EQ_MODES] = {
 	{0x00000001, 0x00000000}, // EQ 15 Band = Ganged true  + Bypass EQ false
 	{0x00000000, 0x00000000}, // EQ BIAMP   = Ganged false + Bypass EQ false
 	{0x00000000, 0x00000000}, // EQ Presets = Ganged false + Bypass EQ false
+	{0x00000000, 0x00000000}, // EQ Crossover = Ganged false + Bypass EQ false
 };
 #endif
 
@@ -114,7 +116,7 @@ static constexpr uint32_t TAS58XX_MIXER_COEFF_MUTE = 0x00000000;
 static constexpr uint32_t TAS58XX_MIXER_COEFF_0DB = 0x00008000;
 static constexpr uint32_t TAS58XX_MIXER_COEFF_MINUS6DB = 0x00004000;
 
-#if defined(USE_TAS58XX_EQ_GAINS) || defined(USE_TAS58XX_EQ_PRESETS)
+#if defined(USE_TAS58XX_EQ_GAINS) || defined(USE_TAS58XX_EQ_PRESETS) || defined(USE_TAS58XX_EQ_CROSSOVER)
 // Biquad pages and subaddresses
 struct AddressSequence {
 	uint8_t page;

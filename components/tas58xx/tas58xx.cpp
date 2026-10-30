@@ -5,6 +5,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 
+#include <cstring>
+
 namespace esphome::tas58xx {
 
 #ifdef USE_TAS5805M_DAC
@@ -23,8 +25,38 @@ static constexpr uint8_t DELAY_LOOPS = 40;  // 40 loop iterations ~ 300ms initia
 
 static constexpr uint16_t INITIAL_UPDATE_DELAY = 4000;  // initial ms delay before starting fault updates
 
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+static constexpr const char* CROSSOVER = "Crossover";
+static constexpr const char* ROLE_TEXT[crossover::NUMBER_ROLES] = {"Tweeter", "Mid"};
+static constexpr const char* FILTER_TEXT[crossover::NUMBER_FILTERS] = {"LR2", "LR4", "BW2", "BW4"};
+
+static constexpr uint8_t CLOCK_STABLE_READS = 4;       // consecutive valid FS_MON reads before writing coefficients
+static constexpr uint8_t CLOCK_READ_INTERVAL = 2;      // loop iterations between FS_MON reads while clock is valid
+static constexpr uint8_t CLOCK_POLL_INTERVAL = 10;     // loop iterations between FS_MON reads while waiting for a clock
+static constexpr uint8_t RETRY_INTERVAL = 60;          // loop iterations before retrying after a failed write or verify
+static constexpr uint32_t WAIT_LOG_INTERVAL = 10000;   // ms between 'waiting for clock' log messages
+
+static constexpr uint16_t CHAIN_BYTES = crossover::NUMBER_BANDS * BIQUAD_SIZE;
+static_assert(BIQUAD_SIZE == biquad::ENCODED_SIZE, "biquad size mismatch");
+
+static const AddressSequence* eq_address(Channels channel, uint8_t band) {
+#ifdef USE_TAS5805M_DAC
+  return (channel == LEFT_CHANNEL) ? &TAS5805M_LEFT_EQ_ADDRESS[band] : &TAS5805M_RIGHT_EQ_ADDRESS[band];
+#else
+  return (channel == LEFT_CHANNEL) ? &TAS5825M_LEFT_EQ_ADDRESS[band] : &TAS5825M_RIGHT_EQ_ADDRESS[band];
+#endif
+}
+#endif
+
 void Tas58xxComponent::setup() {
   ESP_LOGCONFIG(TAG, "Running setup");
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // never let the tweeter play full range: stay muted until the crossover has been written and verified
+  this->safety_mute_ = true;
+  // crossover is on by default, an EQ Mode select can still switch it Off
+  this->tas58xx_eq_mode_ = this->configured_eq_mode_;
+#endif
   if (this->enable_pin_ != nullptr) {
     this->enable_pin_->setup();
     this->enable_pin_->digital_write(false);
@@ -41,6 +73,15 @@ void Tas58xxComponent::setup() {
   // rescale -103db to 24db digital volume range to register digital volume range 254 to 0
   this->tas58xx_raw_volume_max_ = (uint8_t)((this->tas58xx_volume_max_ - 24) * -2);
   this->tas58xx_raw_volume_min_ = (uint8_t)((this->tas58xx_volume_min_ - 24) * -2);
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // crossover writes are gated on the DAC reporting a valid I2S clock, so an early trigger is safe
+  // with refresh_eq: MANUAL the EQ Mode select triggers the refresh instead
+  if (this->using_auto_eq_refresh()) {
+    this->refresh_eq_settings();
+    ESP_LOGD(TAG, "%s setup triggered EQ settings refresh", CROSSOVER);
+  }
+#endif
 }
 
 bool Tas58xxComponent::configure_registers_() {
@@ -97,6 +138,17 @@ void Tas58xxComponent::loop() {
         this->loop_counter_++;
         return;
       }
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+      this->loop_setup_stage_ = WAIT_FOR_CLOCK;
+#else
+      this->loop_setup_stage_ = INPUT_MIXER_SETUP;
+#endif
+      return;
+
+    case WAIT_FOR_CLOCK:
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+      if (!this->wait_for_stable_clock_()) return;
+#endif
       this->loop_setup_stage_ = INPUT_MIXER_SETUP;
       return;
 
@@ -129,6 +181,11 @@ void Tas58xxComponent::loop() {
 
 #ifdef USE_TAS58XX_EQ_PRESETS
       this->loop_setup_stage_ = EQ_PRESETS_SETUP;
+#endif
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+      this->loop_setup_stage_ = CROSSOVER_SETUP;
+      this->request_crossover_apply_(false);
 #endif
 
       // if loop_setup_stage_ has not changed then no EQ configured
@@ -174,7 +231,18 @@ void Tas58xxComponent::loop() {
 #endif
       return;
 
+    case CROSSOVER_SETUP:
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+      if (this->crossover_loop_()) return;
+#endif
+      this->loop_setup_stage_ = SETUP_COMPLETE;
+      return;
+
     case SETUP_COMPLETE:
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+      // keep looping while a crossover change is being applied, 'request_crossover_apply_' re-enables loop
+      if (this->crossover_loop_()) return;
+#endif
       this->disable_loop(); // requires Esphome 2025.7.0 or greater
       return;
   }
@@ -261,6 +329,19 @@ void Tas58xxComponent::dump_config() {
               this->ignore_clock_faults_when_clearing_faults_ ? "CLOCK FAULTS" : "NONE",
               this->eq_refresh_ ? "MANUAL" : "AUTO"
               );
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+      ESP_LOGCONFIG(TAG,
+              "  %s: %s %.0fHz\n"
+              "    Tweeter Channel: %s\n"
+              "    Tweeter Gain: %.1fdB  Mid Gain: %.1fdB\n"
+              "    DSP Sample Rate: %.0fHz\n"
+              "    Loudness: %s  Reference: %.1fdB",
+              CROSSOVER, FILTER_TEXT[this->xover_.filter], this->xover_.frequency,
+              LR_CHANNEL_TEXT[this->xover_tweeter_channel_],
+              this->xover_.driver[crossover::ROLE_TWEETER].gain_db, this->xover_.driver[crossover::ROLE_MID].gain_db,
+              this->xover_dsp_sample_rate_,
+              ONOFF(this->xover_.loudness), this->xover_.loudness_reference_db);
+#endif
       LOG_UPDATE_INTERVAL(this);
       break;
   }
@@ -289,6 +370,11 @@ void Tas58xxComponent::dump_config() {
 // used by 'enable_dac_switch'
 void Tas58xxComponent::enable_dac(bool enable) {
   enable ? this->set_deep_sleep_off_() : this->set_deep_sleep_on_();
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // after deep sleep check the crossover is still in place before the tweeter plays
+  if (enable && this->loop_setup_stage_ >= CROSSOVER_SETUP) this->request_crossover_apply_(true);
+#endif
 }
 
 // used by select eq mode
@@ -400,10 +486,7 @@ bool Tas58xxComponent::set_channel_volume(Channels channel, int8_t volume_dB) {
     return true;
   }
 
-  int32_t little_endian_9_23 = tas58xx_helpers::gain_to_f9_23_(volume_dB);
-
-  if (!this->book_and_page_write_(TAS58XX_AUDIO_CTRL_BOOK, TAS58XX_CHANNEL_VOLUME_PAGE, TAS58XX_CHANNEL_VOLUME_SUBADDR[channel],
-                                  reinterpret_cast<uint8_t*>(&little_endian_9_23), sizeof(little_endian_9_23))) {
+  if (!this->write_channel_gain_(channel)) {
     ESP_LOGW(TAG, "%s writing %s Channel Volume: %ddb", ERROR, LR_CHANNEL_TEXT[channel], volume_dB);
     return false;
   }
@@ -542,8 +625,12 @@ bool Tas58xxComponent::set_eq_preset(Channels channel, uint8_t select_preset) {
 
 bool Tas58xxComponent::set_mute_off() {
   if (!this->is_muted_) return true;
-  if (!this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, this->tas58xx_control_state_)) return false;
   this->is_muted_ = false;
+  // safety mute keeps the DAC muted until the crossover is in place
+  if (!this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, this->tas58xx_control_state_ + this->ctrl2_mute_bits_())) {
+    this->is_muted_ = true;
+    return false;
+  }
   ESP_LOGV(TAG, "Mute >> Off");
   return true;
 }
@@ -583,6 +670,11 @@ bool Tas58xxComponent::set_volume(float volume) {
   float new_volume = clamp(volume, 0.0f, 1.0f);
   uint8_t raw_volume = remap<uint8_t, float>(new_volume, 0.0f, 1.0f, this->tas58xx_raw_volume_min_, this->tas58xx_raw_volume_max_);
   if (!this->set_digital_volume_(raw_volume)) return false;
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // digital volume register is 24dB to -103dB in 0.5dB steps
+  this->xover_volume_db_ = 24.0f - (raw_volume / 2.0f);
+  this->update_loudness_();
+#endif
   #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
     int8_t dB = -(raw_volume / 2) + 24;
     ESP_LOGV(TAG, "Volume >> %ddB", dB);
@@ -658,7 +750,7 @@ bool Tas58xxComponent::set_dac_mode_(DacMode mode) {
 bool Tas58xxComponent::set_deep_sleep_off_() {
   if (this->tas58xx_control_state_ != CTRL_DEEP_SLEEP) return true; // already not in deep sleep
   // preserve mute state
-  uint8_t new_value = (this->is_muted_) ? (CTRL_PLAY + TAS58XX_MUTE_CONTROL) : CTRL_PLAY;
+  uint8_t new_value = CTRL_PLAY + this->ctrl2_mute_bits_();
   if (!this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, new_value)) return false;
 
   this->tas58xx_control_state_ = CTRL_PLAY;                        // set Control State to play
@@ -673,7 +765,7 @@ bool Tas58xxComponent::set_deep_sleep_on_() {
   if (this->tas58xx_control_state_ == CTRL_DEEP_SLEEP) return true; // already in deep sleep
 
   // preserve mute state
-  uint8_t new_value = (this->is_muted_) ? (CTRL_DEEP_SLEEP + TAS58XX_MUTE_CONTROL) : CTRL_DEEP_SLEEP;
+  uint8_t new_value = CTRL_DEEP_SLEEP + this->ctrl2_mute_bits_();
   if (!this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, new_value)) return false;
 
   this->tas58xx_control_state_ = CTRL_DEEP_SLEEP;                   // set Control State to deep sleep
@@ -711,7 +803,8 @@ bool Tas58xxComponent::get_eq_mode_(EqMode* current_mode) {
 }
 
 bool Tas58xxComponent::set_eq_mode_(EqMode new_mode) {
-#if defined(USE_TAS58XX_EQ_GAINS) || defined(USE_TAS58XX_EQ_PRESETS)
+#if defined(USE_TAS58XX_EQ_GAINS) || defined(USE_TAS58XX_EQ_PRESETS) || defined(USE_TAS58XX_EQ_CROSSOVER)
+  [[maybe_unused]] const bool mode_changed = (this->tas58xx_eq_mode_ != new_mode);
   this->tas58xx_eq_mode_ = new_mode;
 
   // only save until ready to setup in 'loop'
@@ -720,6 +813,25 @@ bool Tas58xxComponent::set_eq_mode_(EqMode new_mode) {
     return true;
   }
 
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // switching EQ mode changes what the tweeter receives, so reapply under the safety mute
+  // EQ Off bypasses the crossover, so the tweeter channel gain is then held at mute
+  if (this->loop_setup_stage_ >= CROSSOVER_SETUP) {
+    if (!mode_changed) return true;
+    ESP_LOGD(TAG, "Set EQ Mode: %s", EQ_MODE_TEXT[new_mode]);
+    this->request_crossover_apply_(false);
+    return true;
+  }
+#endif
+
+  if (!this->write_eq_mode_register_(new_mode)) return false;
+
+  ESP_LOGD(TAG, "Set EQ Mode: %s", EQ_MODE_TEXT[new_mode]);
+#endif
+  return true;
+}
+
+bool Tas58xxComponent::write_eq_mode_register_(EqMode new_mode) {
 #ifdef USE_TAS5805M_DAC
   if (!this->tas58xx_write_byte_(TAS5805M_DSP_MISC, TAS5805M_CTRL_EQ[new_mode])) {
     ESP_LOGW(TAG, "%s writing Eq Mode: %s", ERROR, EQ_MODE_TEXT[new_mode]);
@@ -732,9 +844,6 @@ bool Tas58xxComponent::set_eq_mode_(EqMode new_mode) {
     ESP_LOGW(TAG, "%s writing Eq Mode: %s", ERROR, EQ_MODE_TEXT[new_mode]);
     return false;
   }
-#endif
-
-  ESP_LOGD(TAG, "Set EQ Mode: %s", EQ_MODE_TEXT[new_mode]);
 #endif
   return true;
 }
@@ -763,9 +872,13 @@ bool Tas58xxComponent::get_state_(ControlState* state) {
 
 bool Tas58xxComponent::set_state_(ControlState state) {
   if (this->tas58xx_control_state_ == state) return true;
-  if (!this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, state)) return false;
+  if (!this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, state + this->ctrl2_mute_bits_())) return false;
   this->tas58xx_control_state_ = state;
   return true;
+}
+
+uint8_t Tas58xxComponent::ctrl2_mute_bits_() {
+  return (this->is_muted_ || this->safety_mute_) ? TAS58XX_MUTE_CONTROL : 0;
 }
 
 //// fault processing functions
@@ -900,6 +1013,484 @@ bool Tas58xxComponent::read_fault_registers_() {
 
   return true;
 }
+
+//// channel gain
+
+#if defined(USE_TAS58XX_CHANNEL_VOLUMES) || defined(USE_TAS58XX_EQ_CROSSOVER)
+bool Tas58xxComponent::write_channel_gain_(Channels channel) {
+  int32_t little_endian_9_23 = tas58xx_helpers::gain_to_f9_23_(this->tas58xx_channel_volume_[channel]);
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+  // tweeter channel gain is held at mute whenever the crossover is not protecting it
+  if ((channel == this->crossover_channel_(crossover::ROLE_TWEETER)) && this->tweeter_must_be_muted_()) {
+    little_endian_9_23 = 0;
+  }
+#endif
+
+  return this->book_and_page_write_(TAS58XX_AUDIO_CTRL_BOOK, TAS58XX_CHANNEL_VOLUME_PAGE, TAS58XX_CHANNEL_VOLUME_SUBADDR[channel],
+                                    reinterpret_cast<uint8_t*>(&little_endian_9_23), sizeof(little_endian_9_23));
+}
+#endif
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+//// crossover
+
+float Tas58xxComponent::get_crossover_value(CrossoverParam param, uint8_t role, uint8_t band) {
+  if (role >= crossover::NUMBER_ROLES || band >= crossover::NUMBER_PEQ_BANDS) return 0.0f;
+  const crossover::DriverSettings &driver = this->xover_.driver[role];
+  const crossover::PeqBand &peq = driver.peq[band];
+
+  switch (param) {
+    case XO_PARAM_FILTER:             return static_cast<float>(this->xover_.filter);
+    case XO_PARAM_TWEETER_CHANNEL:    return static_cast<float>(this->xover_tweeter_channel_);
+    case XO_PARAM_FREQUENCY:          return this->xover_.frequency;
+    case XO_PARAM_GAIN:               return driver.gain_db;
+    case XO_PARAM_INVERT:             return driver.invert ? 1.0f : 0.0f;
+    case XO_PARAM_DELAY:              return driver.delay_mm;
+    case XO_PARAM_LOUDNESS:           return this->xover_.loudness ? 1.0f : 0.0f;
+    case XO_PARAM_LOUDNESS_REFERENCE: return this->xover_.loudness_reference_db;
+    case XO_PARAM_PEQ_FREQUENCY:      return peq.frequency;
+    case XO_PARAM_PEQ_GAIN:           return peq.gain_db;
+    case XO_PARAM_PEQ_Q:              return peq.q;
+    case XO_PARAM_PEQ_TYPE:           return static_cast<float>(peq.type);
+  }
+  return 0.0f;
+}
+
+void Tas58xxComponent::set_crossover_value(CrossoverParam param, uint8_t role, uint8_t band, float value) {
+  if (role >= crossover::NUMBER_ROLES || band >= crossover::NUMBER_PEQ_BANDS) {
+    ESP_LOGE(TAG, "Invalid %s role:%d band:%d", CROSSOVER, role, band);
+    return;
+  }
+  const crossover::DriverRole driver_role = static_cast<crossover::DriverRole>(role);
+  crossover::DriverSettings &driver = this->xover_.driver[role];
+  crossover::PeqBand &peq = driver.peq[band];
+
+  switch (param) {
+    case XO_PARAM_FILTER: {
+      const uint8_t filter = static_cast<uint8_t>(value);
+      if (filter >= crossover::NUMBER_FILTERS) {
+        ESP_LOGE(TAG, "Invalid %s Filter index: %d", CROSSOVER, filter);
+        return;
+      }
+      this->xover_.filter = static_cast<crossover::CrossoverFilter>(filter);
+      ESP_LOGD(TAG, "Set %s Filter: %s", CROSSOVER, FILTER_TEXT[filter]);
+      this->crossover_sections_changed_();
+      return;
+    }
+
+    case XO_PARAM_FREQUENCY:
+      this->xover_.frequency = clamp(value, crossover::FREQUENCY_MIN, crossover::FREQUENCY_MAX);
+      ESP_LOGD(TAG, "Set %s Frequency: %.0fHz", CROSSOVER, this->xover_.frequency);
+      this->crossover_sections_changed_();
+      return;
+
+    case XO_PARAM_TWEETER_CHANNEL: {
+      const Channels channel = (value >= 0.5f) ? RIGHT_CHANNEL : LEFT_CHANNEL;
+      if (channel == this->xover_tweeter_channel_) return;
+      this->xover_tweeter_channel_ = channel;
+      ESP_LOGD(TAG, "Set %s Tweeter Channel: %s", CROSSOVER, LR_CHANNEL_TEXT[channel]);
+      // both channels change filter type, so rewrite everything under the safety mute
+      this->request_crossover_apply_(false);
+      return;
+    }
+
+    case XO_PARAM_GAIN:
+      driver.gain_db = clamp(value, crossover::DRIVER_GAIN_MIN_DB, crossover::DRIVER_GAIN_MAX_DB);
+      ESP_LOGD(TAG, "Set %s %s Gain: %.1fdB", CROSSOVER, ROLE_TEXT[role], driver.gain_db);
+      this->crossover_band_changed_(driver_role, crossover::BAND_GAIN);
+      return;
+
+    case XO_PARAM_INVERT:
+      driver.invert = (value >= 0.5f);
+      ESP_LOGD(TAG, "Set %s %s Polarity: %s", CROSSOVER, ROLE_TEXT[role], driver.invert ? "Inverted" : "Normal");
+      this->crossover_band_changed_(driver_role, crossover::BAND_GAIN);
+      return;
+
+    case XO_PARAM_DELAY:
+      driver.delay_mm = clamp(value, 0.0f, crossover::DELAY_MAX_MM);
+      ESP_LOGD(TAG, "Set %s %s Delay: %.0fmm", CROSSOVER, ROLE_TEXT[role], driver.delay_mm);
+      this->crossover_band_changed_(driver_role, crossover::BAND_DELAY);
+      return;
+
+    case XO_PARAM_LOUDNESS:
+      this->xover_.loudness = (value >= 0.5f);
+      ESP_LOGD(TAG, "Set Loudness: %s", ONOFF(this->xover_.loudness));
+      this->update_loudness_();
+      return;
+
+    case XO_PARAM_LOUDNESS_REFERENCE:
+      this->xover_.loudness_reference_db = clamp(value, crossover::LOUDNESS_REFERENCE_MIN_DB, crossover::LOUDNESS_REFERENCE_MAX_DB);
+      ESP_LOGD(TAG, "Set Loudness Reference: %.1fdB", this->xover_.loudness_reference_db);
+      this->update_loudness_();
+      return;
+
+    case XO_PARAM_PEQ_FREQUENCY:
+      peq.frequency = clamp(value, crossover::PEQ_FREQUENCY_MIN, crossover::PEQ_FREQUENCY_MAX);
+      ESP_LOGD(TAG, "Set %s PEQ %d Frequency: %.0fHz", ROLE_TEXT[role], band + 1, peq.frequency);
+      break;
+
+    case XO_PARAM_PEQ_GAIN:
+      peq.gain_db = clamp(value, -crossover::PEQ_GAIN_MAX_DB, crossover::PEQ_GAIN_MAX_DB);
+      ESP_LOGD(TAG, "Set %s PEQ %d Gain: %.1fdB", ROLE_TEXT[role], band + 1, peq.gain_db);
+      break;
+
+    case XO_PARAM_PEQ_Q:
+      peq.q = clamp(value, crossover::PEQ_Q_MIN, crossover::PEQ_Q_MAX);
+      ESP_LOGD(TAG, "Set %s PEQ %d Q: %.2f", ROLE_TEXT[role], band + 1, peq.q);
+      break;
+
+    case XO_PARAM_PEQ_TYPE: {
+      const uint8_t type = static_cast<uint8_t>(value);
+      if (type >= crossover::NUMBER_PEQ_TYPES) {
+        ESP_LOGE(TAG, "Invalid %s PEQ %d Type index: %d", ROLE_TEXT[role], band + 1, type);
+        return;
+      }
+      peq.type = static_cast<crossover::PeqType>(type);
+      ESP_LOGD(TAG, "Set %s PEQ %d Type index: %d", ROLE_TEXT[role], band + 1, type);
+      break;
+    }
+
+    default:
+      return;
+  }
+
+  // PEQ parameters
+  this->crossover_band_changed_(driver_role, crossover::BAND_PEQ_START + band);
+}
+
+bool Tas58xxComponent::tweeter_must_be_muted_() {
+  // EQ Off bypasses the DSP biquads, which would send full range audio to the tweeter
+  return !this->xover_applied_ || (this->tas58xx_eq_mode_ == EQ_OFF);
+}
+
+Channels Tas58xxComponent::crossover_channel_(crossover::DriverRole role) {
+  if (role == crossover::ROLE_TWEETER) return this->xover_tweeter_channel_;
+  return (this->xover_tweeter_channel_ == LEFT_CHANNEL) ? RIGHT_CHANNEL : LEFT_CHANNEL;
+}
+
+void Tas58xxComponent::request_crossover_apply_(bool verify_only) {
+  // a full apply always wins over a verify only request
+  if (!this->xover_pending_) {
+    this->xover_verify_only_ = verify_only;
+  } else if (!verify_only) {
+    this->xover_verify_only_ = false;
+  }
+  this->xover_pending_ = true;
+  if (this->loop_setup_stage_ == SETUP_COMPLETE) this->enable_loop();
+}
+
+// Applies the whole crossover while the DAC is muted. Each step runs in its own 'loop' iteration.
+// The safety mute is only released once the tweeter biquads have been read back and match.
+bool Tas58xxComponent::crossover_loop_() {
+  switch (this->xover_step_) {
+    case XO_IDLE:
+      if (!this->xover_pending_) return false;
+      if (!this->set_safety_mute_(true)) {
+        ESP_LOGW(TAG, "%s %s setting safety mute", ERROR, CROSSOVER);
+        return true; // try again next loop
+      }
+      this->xover_pending_ = false;
+      this->xover_applied_ = false;
+      this->xover_clock_good_reads_ = 0;
+      this->xover_wait_loops_ = 0;
+      this->xover_step_ = XO_WAIT_CLOCK;
+      return true;
+
+    case XO_WAIT_CLOCK:
+      if (!this->wait_for_stable_clock_()) return true;
+      this->xover_step_ = this->xover_verify_only_ ? XO_VERIFY : XO_WRITE_MODE;
+      return true;
+
+    case XO_WRITE_MODE:
+      this->xover_verify_only_ = false;
+      this->xover_loudness_applied_ = crossover::loudness_boost(this->xover_, this->xover_volume_db_);
+      if (!this->write_eq_mode_register_(this->tas58xx_eq_mode_)) {
+        this->crossover_step_failed_("EQ mode write");
+        return true;
+      }
+      if (!this->set_mixer_mode(this->tas58xx_mixer_mode_)) {
+        this->crossover_step_failed_("mixer write");
+        return true;
+      }
+      this->xover_step_ = XO_WRITE_TWEETER;
+      return true;
+
+    case XO_WRITE_TWEETER:
+      if (!this->write_crossover_chain_(crossover::ROLE_TWEETER)) {
+        this->crossover_step_failed_("tweeter biquad write");
+        return true;
+      }
+      this->xover_step_ = XO_WRITE_MID;
+      return true;
+
+    case XO_WRITE_MID:
+      if (!this->write_crossover_chain_(crossover::ROLE_MID)) {
+        this->crossover_step_failed_("mid biquad write");
+        return true;
+      }
+      this->xover_step_ = XO_VERIFY;
+      return true;
+
+    case XO_VERIFY:
+      if (!this->verify_crossover_chain_(crossover::ROLE_TWEETER) || !this->verify_crossover_chain_(crossover::ROLE_MID)) {
+        if (this->xover_verify_only_) {
+          // crossover was lost or changed while the DAC was asleep, write it again
+          ESP_LOGI(TAG, "%s readback differs, rewriting", CROSSOVER);
+          this->xover_verify_only_ = false;
+          this->xover_step_ = XO_WRITE_MODE;
+          return true;
+        }
+        this->crossover_step_failed_("readback");
+        return true;
+      }
+      this->xover_verify_only_ = false;
+      this->xover_step_ = XO_WRITE_GAINS;
+      return true;
+
+    case XO_WRITE_GAINS: {
+      if (this->xover_pending_) {
+        // settings changed while applying, start again without releasing the mute
+        this->xover_pending_ = false;
+        this->xover_step_ = XO_WRITE_MODE;
+        return true;
+      }
+
+      this->xover_applied_ = true;
+      bool ok = this->write_channel_gain_(LEFT_CHANNEL) && this->write_channel_gain_(RIGHT_CHANNEL);
+
+      if (ok && this->tweeter_must_be_muted_()) {
+        // EQ Off: confirm the tweeter channel gain reads back as mute before releasing the safety mute
+        uint8_t gain[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+        ok = this->book_and_page_block_(TAS58XX_AUDIO_CTRL_BOOK, TAS58XX_CHANNEL_VOLUME_PAGE,
+                                        TAS58XX_CHANNEL_VOLUME_SUBADDR[this->crossover_channel_(crossover::ROLE_TWEETER)],
+                                        gain, sizeof(gain), true);
+        ok = ok && (gain[0] == 0) && (gain[1] == 0) && (gain[2] == 0) && (gain[3] == 0);
+      }
+
+      if (!ok) {
+        this->crossover_step_failed_("channel gain write");
+        return true;
+      }
+      this->xover_step_ = XO_UNMUTE;
+      return true;
+    }
+
+    case XO_UNMUTE:
+      if (this->xover_pending_) {
+        this->xover_pending_ = false;
+        this->xover_applied_ = false;
+        this->xover_step_ = XO_WRITE_MODE;
+        return true;
+      }
+      if (!this->set_safety_mute_(false)) {
+        ESP_LOGW(TAG, "%s %s releasing safety mute", ERROR, CROSSOVER);
+        return true; // try again next loop
+      }
+      this->xover_failures_ = 0;
+      this->xover_step_ = XO_IDLE;
+      ESP_LOGI(TAG, "%s applied: %s %.0fHz, tweeter on %s channel%s", CROSSOVER, FILTER_TEXT[this->xover_.filter],
+               this->xover_.frequency, LR_CHANNEL_TEXT[this->xover_tweeter_channel_],
+               (this->tas58xx_eq_mode_ == EQ_OFF) ? " (EQ Off: tweeter muted)" : "");
+      // pick up any volume change made while applying
+      this->update_loudness_();
+      return this->xover_pending_;
+  }
+  return false;
+}
+
+void Tas58xxComponent::crossover_step_failed_(const char* what) {
+  this->xover_applied_ = false;
+  this->xover_failures_++;
+  ESP_LOGW(TAG, "%s %s failed, DAC stays muted, retry %d", CROSSOVER, what, this->xover_failures_);
+  this->xover_clock_good_reads_ = 0;
+  this->xover_wait_loops_ = RETRY_INTERVAL;
+  this->xover_step_ = XO_WAIT_CLOCK;
+}
+
+bool Tas58xxComponent::wait_for_stable_clock_() {
+  if (this->xover_wait_loops_ > 0) {
+    this->xover_wait_loops_--;
+    return false;
+  }
+
+  const char* waiting_for = nullptr;
+  uint8_t fs_mon = TAS58XX_FS_MON_ERROR;
+
+  if (this->tas58xx_control_state_ != CTRL_PLAY) {
+    // coefficient writes during deep sleep are not reliable, wait for 'enable_dac'
+    waiting_for = "DAC to be enabled";
+  } else if (!this->tas58xx_read_bytes_(TAS58XX_FS_MON, &fs_mon, 1) || ((fs_mon & TAS58XX_FS_MON_MASK) == TAS58XX_FS_MON_ERROR)) {
+    waiting_for = "I2S clock";
+  }
+
+  if (waiting_for != nullptr) {
+    this->xover_clock_good_reads_ = 0;
+    this->xover_wait_loops_ = CLOCK_POLL_INTERVAL;
+    const uint32_t now = millis();
+    if ((now - this->xover_last_wait_log_) > WAIT_LOG_INTERVAL) {
+      ESP_LOGI(TAG, "%s waiting for %s, DAC muted", CROSSOVER, waiting_for);
+      this->xover_last_wait_log_ = now;
+    }
+    return false;
+  }
+
+  if (++this->xover_clock_good_reads_ < CLOCK_STABLE_READS) {
+    this->xover_wait_loops_ = CLOCK_READ_INTERVAL;
+    return false;
+  }
+
+  this->xover_clock_good_reads_ = 0;
+  if ((fs_mon & TAS58XX_FS_MON_MASK) != TAS58XX_FS_MON_48K) {
+    ESP_LOGW(TAG, "%s I2S sample rate code 0x%02X is not 48kHz", CROSSOVER, fs_mon & TAS58XX_FS_MON_MASK);
+  }
+  return true;
+}
+
+bool Tas58xxComponent::set_safety_mute_(bool mute) {
+  this->safety_mute_ = mute;
+  if (this->tas58xx_write_byte_(TAS58XX_DEVICE_CTRL_2, this->tas58xx_control_state_ + this->ctrl2_mute_bits_())) {
+    ESP_LOGV(TAG, "Safety Mute >> %s", ONOFF(mute));
+    return true;
+  }
+  // write failed so the DAC state is unknown, keep treating it as muted
+  this->safety_mute_ = true;
+  return false;
+}
+
+void Tas58xxComponent::encode_crossover_chain_(crossover::DriverRole role, uint8_t* data) {
+  crossover::encode_chain(this->xover_, role, this->xover_dsp_sample_rate_, this->xover_loudness_applied_, data);
+}
+
+bool Tas58xxComponent::write_crossover_chain_(crossover::DriverRole role) {
+  uint8_t data[CHAIN_BYTES];
+  this->encode_crossover_chain_(role, data);
+
+  const Channels channel = this->crossover_channel_(role);
+  const AddressSequence* start = eq_address(channel, 0);
+  if (!this->book_and_page_block_(TAS58XX_EQ_CTRL_BOOK, start->page, start->sub_addr, data, CHAIN_BYTES, false)) return false;
+
+  ESP_LOGD(TAG, "%s %s biquads written to %s channel", CROSSOVER, ROLE_TEXT[role], LR_CHANNEL_TEXT[channel]);
+  return true;
+}
+
+bool Tas58xxComponent::verify_crossover_chain_(crossover::DriverRole role) {
+  uint8_t expected[CHAIN_BYTES];
+  uint8_t actual[CHAIN_BYTES];
+  this->encode_crossover_chain_(role, expected);
+
+  const Channels channel = this->crossover_channel_(role);
+  const AddressSequence* start = eq_address(channel, 0);
+  if (!this->book_and_page_block_(TAS58XX_EQ_CTRL_BOOK, start->page, start->sub_addr, actual, CHAIN_BYTES, true)) return false;
+
+  for (uint8_t band = 0; band < crossover::NUMBER_BANDS; band++) {
+    if (memcmp(expected + band * BIQUAD_SIZE, actual + band * BIQUAD_SIZE, BIQUAD_SIZE) != 0) {
+      ESP_LOGD(TAG, "%s %s band %d readback differs on %s channel", CROSSOVER, ROLE_TEXT[role], band + 1, LR_CHANNEL_TEXT[channel]);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Tas58xxComponent::write_crossover_band_(crossover::DriverRole role, uint8_t band) {
+  uint8_t data[BIQUAD_SIZE];
+  biquad::encode(crossover::band_coefficients(this->xover_, role, band, this->xover_dsp_sample_rate_, this->xover_loudness_applied_), data);
+
+  const AddressSequence* address = eq_address(this->crossover_channel_(role), band);
+  return this->book_and_page_write_(TAS58XX_EQ_CTRL_BOOK, address->page, address->sub_addr, data, BIQUAD_SIZE);
+}
+
+void Tas58xxComponent::crossover_band_changed_(crossover::DriverRole role, uint8_t band) {
+  // an apply in progress may already have written this band, so start it again
+  if (this->xover_step_ != XO_IDLE) {
+    this->request_crossover_apply_(false);
+    return;
+  }
+  // not applied yet: the first apply will include the new value
+  if (!this->xover_applied_) return;
+
+  // gain, delay and PEQ bands cannot remove the tweeter high-pass, so write them while playing
+  if (!this->write_crossover_band_(role, band)) {
+    ESP_LOGW(TAG, "%s writing %s band %d, reapplying", ERROR, ROLE_TEXT[role], band + 1);
+    this->request_crossover_apply_(false);
+  }
+}
+
+void Tas58xxComponent::crossover_sections_changed_() {
+  if (this->xover_step_ != XO_IDLE) {
+    this->request_crossover_apply_(false);
+    return;
+  }
+  if (!this->xover_applied_) return;
+
+  // filter type and frequency changes keep the tweeter on a high-pass at every intermediate step,
+  // a failed write could leave a partial biquad so reapply under the safety mute
+  for (uint8_t role = 0; role < crossover::NUMBER_ROLES; role++) {
+    for (uint8_t i = 0; i < crossover::BAND_CROSSOVER_COUNT; i++) {
+      if (!this->write_crossover_band_(static_cast<crossover::DriverRole>(role), crossover::BAND_CROSSOVER_START + i)) {
+        ESP_LOGW(TAG, "%s writing %s sections, reapplying", ERROR, CROSSOVER);
+        this->request_crossover_apply_(false);
+        return;
+      }
+    }
+  }
+}
+
+void Tas58xxComponent::update_loudness_() {
+  // an apply in progress calls this again when it finishes
+  if (this->xover_step_ != XO_IDLE || !this->xover_applied_) return;
+
+  const crossover::LoudnessBoost boost = crossover::loudness_boost(this->xover_, this->xover_volume_db_);
+  if ((boost.bass_db == this->xover_loudness_applied_.bass_db) && (boost.treble_db == this->xover_loudness_applied_.treble_db)) return;
+
+  this->xover_loudness_applied_ = boost;
+  ESP_LOGD(TAG, "Loudness at %.1fdB: Bass +%.1fdB Treble +%.1fdB", this->xover_volume_db_, boost.bass_db, boost.treble_db);
+
+  if (!this->write_crossover_band_(crossover::ROLE_MID, crossover::BAND_LOUDNESS_BASS) ||
+      !this->write_crossover_band_(crossover::ROLE_TWEETER, crossover::BAND_LOUDNESS_TREBLE)) {
+    ESP_LOGW(TAG, "%s writing Loudness, reapplying", ERROR);
+    this->request_crossover_apply_(false);
+  }
+}
+
+bool Tas58xxComponent::book_and_page_block_(uint8_t book, uint8_t page, uint8_t sub_addr, uint8_t* data, uint16_t number_bytes, bool read) {
+  // read or write consecutive registers spanning several pages, with the book held selected for the whole sequence
+  // each page holds registers 0x08 to 0x7F, consecutive biquads continue at 0x08 on the next page
+  static constexpr uint8_t PAGE_SIZE = 0x80;
+  static constexpr uint8_t MINIMUM_PAGE_SUBADDR = 0x08;
+
+  if (sub_addr < MINIMUM_PAGE_SUBADDR || sub_addr >= PAGE_SIZE || number_bytes == 0) {
+    ESP_LOGE(TAG, "Incorrect address for book and page block");
+    return false;
+  }
+
+  bool ok = this->tas58xx_write_byte_(TAS58XX_PAGE_SET, TAS58XX_PAGE_ZERO);
+  if (ok) ok = this->tas58xx_write_byte_(TAS58XX_BOOK_SET, book);
+  if (ok) ok = this->tas58xx_write_byte_(TAS58XX_PAGE_SET, page);
+
+  while (ok && number_bytes > 0) {
+    const uint8_t chunk = (number_bytes < (PAGE_SIZE - sub_addr)) ? number_bytes : (PAGE_SIZE - sub_addr);
+    ESP_LOGV(TAG, "%s book:0x%02X page:0x%02X subaddress:0x%02X bytes:%d", read ? "Reading" : "Writing", book, page, sub_addr, chunk);
+    ok = read ? this->tas58xx_read_bytes_(sub_addr, data, chunk) : this->tas58xx_write_bytes_(sub_addr, data, chunk);
+    data += chunk;
+    number_bytes -= chunk;
+    if (ok && number_bytes > 0) {
+      page++;
+      sub_addr = MINIMUM_PAGE_SUBADDR;
+      ok = this->tas58xx_write_byte_(TAS58XX_PAGE_SET, page);
+    }
+  }
+
+  // always return to book and page zero, also after an error
+  bool reset_ok = this->tas58xx_write_byte_(TAS58XX_PAGE_SET, TAS58XX_PAGE_ZERO);
+  if (reset_ok) reset_ok = this->tas58xx_write_byte_(TAS58XX_BOOK_SET, TAS58XX_BOOK_ZERO);
+  if (reset_ok) reset_ok = this->tas58xx_write_byte_(TAS58XX_PAGE_SET, TAS58XX_PAGE_ZERO);
+  if (!reset_ok) ESP_LOGE(TAG, "%s re-setting book and page", ERROR);
+
+  return ok && reset_ok;
+}
+#endif // USE_TAS58XX_EQ_CROSSOVER
+
 
 //// low level functions
 

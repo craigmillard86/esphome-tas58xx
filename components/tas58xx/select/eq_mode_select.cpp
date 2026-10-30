@@ -11,7 +11,7 @@ static constexpr uint8_t EQ_ON_NUMBER_OPTIONS  = 2; // two options there is an E
 void EqModeSelect::setup() {
   // retrieve the select options index which was derived from YAML configuration
   // provides the index for the EQ Mode to be used in stored_options_
-  // Off = 0; EQ 15 Band = 1; EQ BIAMP = 2; EQ Presets = 3
+  // Off = 0; EQ 15 Band = 1; EQ BIAMP = 2; EQ Presets = 3; EQ Crossover = 4
   uint8_t select_options_index = this->parent_->get_configured_eq_mode();
 
   size_t initial_select_index = EqMode::EQ_OFF;

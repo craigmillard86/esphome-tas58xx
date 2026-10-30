@@ -10,6 +10,10 @@
 #include "tas58xx_eq_bands.h"
 #include "tas58xx_eq_profiles.h"
 
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+#include "tas58xx_crossover.h"
+#endif
+
 #ifdef USE_TAS58XX_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
@@ -50,6 +54,26 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
   // configured maximum and minimum with units dB
   void config_volume_max(float volume_max) { this->tas58xx_volume_max_ = (int8_t)(volume_max); }
   void config_volume_min(float volume_min) { this->tas58xx_volume_min_ = (int8_t)(volume_min); }
+
+  #ifdef USE_TAS58XX_EQ_CROSSOVER
+  // YAML 'crossover:' defaults, used until a crossover entity restores a saved value
+  void config_crossover_filter(uint8_t filter) { this->xover_.filter = static_cast<crossover::CrossoverFilter>(filter); }
+  void config_crossover_frequency(float frequency) { this->xover_.frequency = frequency; }
+  void config_crossover_tweeter_channel(uint8_t channel) { this->xover_tweeter_channel_ = static_cast<Channels>(channel); }
+  void config_crossover_dsp_sample_rate(float sample_rate) { this->xover_dsp_sample_rate_ = sample_rate; }
+  void config_crossover_driver(uint8_t role, float gain_db, bool invert, float delay_mm) {
+    this->xover_.driver[role].gain_db = gain_db;
+    this->xover_.driver[role].invert = invert;
+    this->xover_.driver[role].delay_mm = delay_mm;
+  }
+  void config_crossover_peq(uint8_t role, uint8_t band, float frequency, float gain_db, float q, uint8_t type) {
+    this->xover_.driver[role].peq[band] = {frequency, gain_db, q, static_cast<crossover::PeqType>(type)};
+  }
+  void config_crossover_loudness(bool enabled, float reference_db) {
+    this->xover_.loudness = enabled;
+    this->xover_.loudness_reference_db = reference_db;
+  }
+  #endif
 
 
   #ifdef USE_TAS58XX_BINARY_SENSOR
@@ -92,6 +116,13 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
 
   bool set_eq_preset(Channels channel, uint8_t select_preset);
 
+  #ifdef USE_TAS58XX_EQ_CROSSOVER
+  // used by crossover numbers, selects and switches
+  // role is crossover::DriverRole and band is the PEQ band index where relevant
+  float get_crossover_value(CrossoverParam param, uint8_t role, uint8_t band);
+  void set_crossover_value(CrossoverParam param, uint8_t role, uint8_t band, float value);
+  #endif
+
   bool is_muted() override { return this->is_muted_; }
   bool set_mute_off() override;
   bool set_mute_on() override;
@@ -129,6 +160,35 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
    bool get_state_(ControlState* state);
    bool set_state_(ControlState state);
 
+   // mute bit for DEVICE_CTRL_2, combines user mute with the crossover safety mute
+   uint8_t ctrl2_mute_bits_();
+
+   bool write_eq_mode_register_(EqMode mode);
+
+#if defined(USE_TAS58XX_CHANNEL_VOLUMES) || defined(USE_TAS58XX_EQ_CROSSOVER)
+   bool write_channel_gain_(Channels channel);
+#endif
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+   // crossover state machine run from 'loop', returns true while busy
+   bool crossover_loop_();
+   void crossover_step_failed_(const char* what);
+   void request_crossover_apply_(bool verify_only);
+   bool wait_for_stable_clock_();
+   bool set_safety_mute_(bool mute);
+
+   bool tweeter_must_be_muted_();
+   Channels crossover_channel_(crossover::DriverRole role);
+
+   void encode_crossover_chain_(crossover::DriverRole role, uint8_t* data);
+   bool write_crossover_chain_(crossover::DriverRole role);
+   bool verify_crossover_chain_(crossover::DriverRole role);
+   bool write_crossover_band_(crossover::DriverRole role, uint8_t band);
+   void crossover_band_changed_(crossover::DriverRole role, uint8_t band);
+   void crossover_sections_changed_();
+   void update_loudness_();
+#endif
+
    // manage faults
    bool clear_fault_registers_();
 
@@ -143,6 +203,11 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
 
    // low level functions
    bool book_and_page_write_(uint8_t book, uint8_t page, uint8_t sub_addr, uint8_t* data, uint8_t number_bytes);
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+   // write or read a block spanning several pages while holding the book selected
+   bool book_and_page_block_(uint8_t book, uint8_t page, uint8_t sub_addr, uint8_t* data, uint16_t number_bytes, bool read);
+#endif
 
   //  int32_t gain_to_f9_23_(int8_t gain);
 
@@ -176,7 +241,7 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
 
    DacMode tas58xx_dac_mode_; // configured in YAML
 
-#if defined(USE_TAS58XX_EQ_GAINS) || defined(USE_TAS58XX_EQ_PRESETS)
+#if defined(USE_TAS58XX_EQ_GAINS) || defined(USE_TAS58XX_EQ_PRESETS) || defined(USE_TAS58XX_EQ_CROSSOVER)
    bool eq_configured_{true};
 #else
    bool eq_configured_{false};
@@ -222,6 +287,25 @@ class Tas58xxComponent : public audio_dac::AudioDac, public PollingComponent, pu
    uint8_t refresh_band_{0}; // eq band currently being refreshed by 'loop'
 
    uint32_t start_time_; // initialised in setup, used for delay in starting 'update'
+
+   bool safety_mute_{false}; // crossover holds the DAC muted until the crossover is written and verified
+
+#ifdef USE_TAS58XX_EQ_CROSSOVER
+   crossover::Settings xover_;                     // YAML defaults then entity values
+   Channels xover_tweeter_channel_{LEFT_CHANNEL};  // YAML configured, other channel is the mid
+   float xover_dsp_sample_rate_{96000.0f};         // DSP processing rate set by register 0x46 in tas58xx_minimal.h
+   float xover_volume_db_{0.0f};                   // last digital volume from 'set_volume', drives loudness
+   crossover::LoudnessBoost xover_loudness_applied_;
+
+   CrossoverStep xover_step_{XO_IDLE};
+   bool xover_pending_{false};        // a full apply has been requested
+   bool xover_verify_only_{false};    // pending request only needs a readback check
+   bool xover_applied_{false};        // crossover written and verified, tweeter may play
+   uint8_t xover_clock_good_reads_{0};
+   uint8_t xover_wait_loops_{0};
+   uint16_t xover_failures_{0};
+   uint32_t xover_last_wait_log_{0};
+#endif
 };
 
 }  // namespace esphome::tas58xx

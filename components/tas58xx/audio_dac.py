@@ -9,8 +9,11 @@ from esphome import pins
 from esphome.const import (
     CONF_ADDRESS,
     CONF_ENABLE_PIN,
+    CONF_FREQUENCY,
+    CONF_GAIN,
     CONF_ID,
     CONF_PLATFORM,
+    CONF_TYPE,
 )
 
 CODEOWNERS = ["@mrtoy-me"]
@@ -29,6 +32,23 @@ CONF_VOLUME_MIN = "volume_min"
 CONF_VOLUME_MAX = "volume_max"
 CONF_TAS58XX_ID = "tas58xx_id"
 
+# crossover yaml configuration constants
+CONF_CROSSOVER = "crossover"
+CONF_FILTER = "filter"
+CONF_TWEETER_CHANNEL = "tweeter_channel"
+CONF_DSP_SAMPLE_RATE = "dsp_sample_rate"
+CONF_TWEETER_GAIN = "tweeter_gain"
+CONF_MID_GAIN = "mid_gain"
+CONF_TWEETER_INVERT = "tweeter_invert"
+CONF_MID_INVERT = "mid_invert"
+CONF_TWEETER_DELAY = "tweeter_delay"
+CONF_MID_DELAY = "mid_delay"
+CONF_TWEETER_PEQ = "tweeter_peq"
+CONF_MID_PEQ = "mid_peq"
+CONF_LOUDNESS = "loudness"
+CONF_LOUDNESS_REFERENCE = "loudness_reference"
+CONF_Q = "q"
+
 # used for looking through CORE.config to derive eq configuration
 NUMBER_COMPONENT= "number"
 SELECT_COMPONENT = "select"
@@ -42,6 +62,19 @@ EQ_OFF = 0
 EQ_15BAND = 1
 EQ_BIAMP = 2
 EQ_PRESETS = 3
+EQ_CROSSOVER = 4
+
+# crossover enum index values, must match tas58xx_crossover.h
+CROSSOVER_FILTERS = {"LR2": 0, "LR4": 1, "BW2": 2, "BW4": 3}
+CROSSOVER_CHANNELS = {"LEFT": 0, "RIGHT": 1}
+PEQ_TYPES = {"PEAKING": 0, "LOW_SHELF": 1, "HIGH_SHELF": 2}
+ROLE_TWEETER = 0
+ROLE_MID = 1
+NUMBER_PEQ_BANDS = 6
+
+# used to check crossover entities are only configured with a crossover
+SWITCH_COMPONENT = "switch"
+EQ_MODE = "eq_mode"
 
 # i2c addresses of dac models
 TAS5805M_I2C_ADDR = 0x2D
@@ -92,9 +125,41 @@ MIXER_MODES = {
 ANALOG_GAINS = [-15.5, -15, -14.5, -14, -13.5, -13, -12.5, -12, -11.5, -11, -10.5, -10, -9.5, -9, -8.5, -8,
                  -7.5,  -7,  -6.5,  -6,  -5.5,  -5,  -4.5,  -4,  -3.5,  -3,  -2.5,  -2, -1.5, -1, -0.5,  0]
 
+PEQ_BAND_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_FREQUENCY, default="1000Hz"): cv.All(cv.frequency, cv.float_range(min=20, max=20000)),
+        cv.Optional(CONF_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-15, max=15)),
+        cv.Optional(CONF_Q, default=1.0): cv.float_range(min=0.1, max=10),
+        cv.Optional(CONF_TYPE, default="PEAKING"): cv.enum(PEQ_TYPES, upper=True, space="_"),
+    }
+)
+
+CROSSOVER_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_FILTER, default="LR4"): cv.enum(CROSSOVER_FILTERS, upper=True),
+        cv.Optional(CONF_FREQUENCY, default="2500Hz"): cv.All(cv.frequency, cv.float_range(min=500, max=8000)),
+        cv.Optional(CONF_TWEETER_CHANNEL, default="LEFT"): cv.enum(CROSSOVER_CHANNELS, upper=True),
+        cv.Optional(CONF_TWEETER_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=6)),
+        cv.Optional(CONF_MID_GAIN, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-24, max=6)),
+        cv.Optional(CONF_TWEETER_INVERT, default=False): cv.boolean,
+        cv.Optional(CONF_MID_INVERT, default=False): cv.boolean,
+        # physical driver offset in mm, applied as a 1st order all-pass approximation of a delay
+        cv.Optional(CONF_TWEETER_DELAY, default=0): cv.float_range(min=0, max=50),
+        cv.Optional(CONF_MID_DELAY, default=0): cv.float_range(min=0, max=50),
+        cv.Optional(CONF_TWEETER_PEQ, default=[]): cv.All(cv.ensure_list(PEQ_BAND_SCHEMA), cv.Length(max=NUMBER_PEQ_BANDS)),
+        cv.Optional(CONF_MID_PEQ, default=[]): cv.All(cv.ensure_list(PEQ_BAND_SCHEMA), cv.Length(max=NUMBER_PEQ_BANDS)),
+        cv.Optional(CONF_LOUDNESS, default=False): cv.boolean,
+        cv.Optional(CONF_LOUDNESS_REFERENCE, default="0dB"): cv.All(cv.decibel, cv.float_range(min=-60, max=0)),
+        # rate the DSP biquads run at, 96kHz with the startup registers used by this component
+        cv.Optional(CONF_DSP_SAMPLE_RATE, default="96000Hz"): cv.All(cv.frequency, cv.one_of(48000, 96000)),
+    }
+)
+
 def validate_config(config):
     if config[CONF_DAC_MODE] == "PBTL" and (config[CONF_MIXER_MODE] == "STEREO" or config[CONF_MIXER_MODE] == "STEREO_INVERSE"):
         raise cv.Invalid("dac_mode: PBTL must have mixer_mode: MONO or RIGHT or LEFT")
+    if CONF_CROSSOVER in config and config[CONF_DAC_MODE] != "BTL":
+        raise cv.Invalid("crossover: requires dac_mode: BTL, one channel drives the tweeter and the other the mid")
     if (config[CONF_VOLUME_MAX] - config[CONF_VOLUME_MIN]) < 9:
         raise cv.Invalid("volume_max must at least 9db greater than volume_min")
     return config
@@ -132,6 +197,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_VOLUME_MIN, default="-103dB"): cv.All(
                         cv.decibel, cv.int_range(-103, 24)
             ),
+            cv.Optional(CONF_CROSSOVER): CROSSOVER_SCHEMA,
         }
     )
     .extend(cv.polling_component_schema("1s"))
@@ -139,6 +205,36 @@ CONFIG_SCHEMA = cv.All(
     .add_extra(validate_config),
     cv.only_on_esp32,
 )
+
+def _final_validate(config):
+    full_conf = fv.full_config.get()
+
+    tas58xx_numbers = [n for n in full_conf.get(NUMBER_COMPONENT, []) if n.get(CONF_PLATFORM) == PLATFORM_TAS58XX]
+    tas58xx_selects = [s for s in full_conf.get(SELECT_COMPONENT, []) if s.get(CONF_PLATFORM) == PLATFORM_TAS58XX]
+
+    have_eq_gains = any(LEFT_EQ_GAIN_20HZ in n or RIGHT_EQ_GAIN_20HZ in n for n in tas58xx_numbers)
+    have_eq_presets = any(EQ_PRESET_LEFT_CHANNEL in s for s in tas58xx_selects)
+    have_eq_mode_select = any(EQ_MODE in s for s in tas58xx_selects)
+
+    if CONF_CROSSOVER in config:
+        if have_eq_gains or have_eq_presets:
+            raise cv.Invalid("crossover: is not allowed with EQ gain numbers or EQ preset selects - remove one of those configurations")
+        if config[CONF_REFRESH_EQ] == "MANUAL" and not have_eq_mode_select:
+            raise cv.Invalid("crossover: with refresh_eq: MANUAL requires Select eq_mode to trigger the refresh")
+    return config
+
+FINAL_VALIDATE_SCHEMA = _final_validate
+
+def validate_crossover_entities(config, keys):
+    # used by number, select and switch platforms: crossover entities need audio_dac crossover:
+    configured = [key for key in keys if key in config]
+    if not configured:
+        return
+    full_conf = fv.full_config.get()
+    for dac in full_conf.get(CONF_AUDIO_DAC, []):
+        if dac.get(CONF_PLATFORM) == PLATFORM_TAS58XX and CONF_CROSSOVER in dac:
+            return
+    raise cv.Invalid(f"{configured[0]} requires crossover: under audio_dac: platform: tas58xx")
 
 def left_eq_gain_exists():
     all_numbers = CORE.config.get(NUMBER_COMPONENT, [])
@@ -169,7 +265,9 @@ def select_eq_presets_exists():
 
 async def to_code(config):
     derived_eq_mode_configuration = EQ_OFF
-    if right_eq_gain_exists():
+    if CONF_CROSSOVER in config:
+        derived_eq_mode_configuration = EQ_CROSSOVER
+    elif right_eq_gain_exists():
         derived_eq_mode_configuration  = EQ_BIAMP
     else:
       if left_eq_gain_exists():
@@ -204,3 +302,18 @@ async def to_code(config):
         cg.add_define("USE_TAS5805M_DAC")
     else:
         cg.add_define("USE_TAS5825M_DAC")
+
+    if crossover_config := config.get(CONF_CROSSOVER):
+        cg.add_define("USE_TAS58XX_EQ_CROSSOVER")
+        cg.add(var.config_crossover_filter(crossover_config[CONF_FILTER]))
+        cg.add(var.config_crossover_frequency(crossover_config[CONF_FREQUENCY]))
+        cg.add(var.config_crossover_tweeter_channel(crossover_config[CONF_TWEETER_CHANNEL]))
+        cg.add(var.config_crossover_dsp_sample_rate(crossover_config[CONF_DSP_SAMPLE_RATE]))
+        cg.add(var.config_crossover_driver(ROLE_TWEETER, crossover_config[CONF_TWEETER_GAIN],
+                                           crossover_config[CONF_TWEETER_INVERT], crossover_config[CONF_TWEETER_DELAY]))
+        cg.add(var.config_crossover_driver(ROLE_MID, crossover_config[CONF_MID_GAIN],
+                                           crossover_config[CONF_MID_INVERT], crossover_config[CONF_MID_DELAY]))
+        for role, key in ((ROLE_TWEETER, CONF_TWEETER_PEQ), (ROLE_MID, CONF_MID_PEQ)):
+            for band, peq in enumerate(crossover_config[key]):
+                cg.add(var.config_crossover_peq(role, band, peq[CONF_FREQUENCY], peq[CONF_GAIN], peq[CONF_Q], peq[CONF_TYPE]))
+        cg.add(var.config_crossover_loudness(crossover_config[CONF_LOUDNESS], crossover_config[CONF_LOUDNESS_REFERENCE]))

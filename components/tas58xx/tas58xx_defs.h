@@ -32,11 +32,41 @@ enum ExcludeIgnoreMode : uint8_t {
 enum LoopSetupStage : uint8_t {
     WAIT_FOR_TRIGGER = 0,
     RUN_DELAY_LOOP,
+    WAIT_FOR_CLOCK,     // crossover only: wait until the DAC reports a valid I2S clock
     INPUT_MIXER_SETUP,
     LR_VOLUME_SETUP,
     EQ_BANDS_SETUP,
     EQ_PRESETS_SETUP,
+    CROSSOVER_SETUP,
     SETUP_COMPLETE,
+};
+
+// parameters set by crossover numbers, selects and switches
+enum CrossoverParam : uint8_t {
+    XO_PARAM_FILTER = 0,
+    XO_PARAM_TWEETER_CHANNEL,
+    XO_PARAM_FREQUENCY,
+    XO_PARAM_GAIN,
+    XO_PARAM_INVERT,
+    XO_PARAM_DELAY,
+    XO_PARAM_LOUDNESS,
+    XO_PARAM_LOUDNESS_REFERENCE,
+    XO_PARAM_PEQ_FREQUENCY,
+    XO_PARAM_PEQ_GAIN,
+    XO_PARAM_PEQ_Q,
+    XO_PARAM_PEQ_TYPE,
+};
+
+// steps used by 'loop' to (re)apply the crossover while the DAC is muted
+enum CrossoverStep : uint8_t {
+    XO_IDLE = 0,
+    XO_WAIT_CLOCK,
+    XO_WRITE_MODE,
+    XO_WRITE_TWEETER,
+    XO_WRITE_MID,
+    XO_VERIFY,
+    XO_WRITE_GAINS,
+    XO_UNMUTE,
 };
 struct Tas58xxFault {
   uint8_t channel_fault{0};                  // individual faults extracted when publishing
@@ -66,6 +96,9 @@ static constexpr uint8_t TAS58XX_PAGE_ZERO             = 0x00;
 static constexpr uint8_t TAS58XX_DEVICE_CTRL_1         = 0x02;
 static constexpr uint8_t TAS58XX_DEVICE_CTRL_2         = 0x03;
 static constexpr uint8_t TAS58XX_FS_MON                = 0x37;
+static constexpr uint8_t TAS58XX_FS_MON_MASK           = 0x0F; // detected sample rate bits
+static constexpr uint8_t TAS58XX_FS_MON_ERROR          = 0x00; // no valid I2S clock
+static constexpr uint8_t TAS58XX_FS_MON_48K            = 0x09;
 static constexpr uint8_t TAS58XX_BCK_MON               = 0x38;
 static constexpr uint8_t TAS58XX_DIG_VOL_CTRL          = 0x4C;
 static constexpr uint8_t TAS58XX_ANA_CTRL              = 0x53;
