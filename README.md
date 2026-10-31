@@ -514,6 +514,10 @@ Mixer mode MONO already halves each input (-6 dB) before the DSP, which gives so
 **tweeter_mute** and **mid_mute** switches mute one driver so you can measure or listen to the other.
 They always start off after a reboot.
 
+The other crossover switches (**tweeter_invert**, **mid_invert**, **loudness**, **headroom_compensation**)
+keep a value set from Home Assistant across reboots, like the crossover numbers and selects. They default to
+`restore_mode: RESTORE_DEFAULT_OFF`; set a different `restore_mode` on a switch to change that.
+
 ### Copying a tuning to another cabinet
 1. Press **Export Crossover to Log** (**crossover_export**). The current settings are printed in the log
    as a **crossover:** block.

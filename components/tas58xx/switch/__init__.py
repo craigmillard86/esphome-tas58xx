@@ -53,8 +53,11 @@ CONFIG_SCHEMA = cv.Schema(
                 CrossoverSwitch,
                 entity_category=ENTITY_CATEGORY_CONFIG,
                 icon=icon,
+                # keep a value set from Home Assistant across reboots, like the crossover numbers and
+                # selects do; the driver mutes are for measuring and must always start off
+                default_restore_mode="ALWAYS_OFF" if param == "XO_PARAM_MUTE" else "RESTORE_DEFAULT_OFF",
             ).extend(cv.COMPONENT_SCHEMA)
-            for key, (_, _, icon) in CROSSOVER_SWITCHES.items()
+            for key, (param, _, icon) in CROSSOVER_SWITCHES.items()
         },
     }
 )

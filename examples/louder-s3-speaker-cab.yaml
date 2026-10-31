@@ -182,10 +182,26 @@ select:
       name: Tweeter PEQ 1 Type
     tweeter_peq_2_type:
       name: Tweeter PEQ 2 Type
+    tweeter_peq_3_type:
+      name: Tweeter PEQ 3 Type
+    tweeter_peq_4_type:
+      name: Tweeter PEQ 4 Type
+    tweeter_peq_5_type:
+      name: Tweeter PEQ 5 Type
+    tweeter_peq_6_type:
+      name: Tweeter PEQ 6 Type
     mid_peq_1_type:
       name: Mid PEQ 1 Type
     mid_peq_2_type:
       name: Mid PEQ 2 Type
+    mid_peq_3_type:
+      name: Mid PEQ 3 Type
+    mid_peq_4_type:
+      name: Mid PEQ 4 Type
+    mid_peq_5_type:
+      name: Mid PEQ 5 Type
+    mid_peq_6_type:
+      name: Mid PEQ 6 Type
 
 number:
   - platform: tas58xx
@@ -221,7 +237,7 @@ number:
       name: Linkwitz Target fp
     linkwitz_qp:
       name: Linkwitz Target Qp
-    # Two of the six PEQ bands per driver are shown here. Add tweeter_peq_3_* to _6_* the same way.
+    # All six PEQ bands per driver, so a tuning tool (or you) can use every band.
     tweeter_peq_1_frequency:
       name: Tweeter PEQ 1 Frequency
     tweeter_peq_1_gain:
@@ -234,6 +250,30 @@ number:
       name: Tweeter PEQ 2 Gain
     tweeter_peq_2_q:
       name: Tweeter PEQ 2 Q
+    tweeter_peq_3_frequency:
+      name: Tweeter PEQ 3 Frequency
+    tweeter_peq_3_gain:
+      name: Tweeter PEQ 3 Gain
+    tweeter_peq_3_q:
+      name: Tweeter PEQ 3 Q
+    tweeter_peq_4_frequency:
+      name: Tweeter PEQ 4 Frequency
+    tweeter_peq_4_gain:
+      name: Tweeter PEQ 4 Gain
+    tweeter_peq_4_q:
+      name: Tweeter PEQ 4 Q
+    tweeter_peq_5_frequency:
+      name: Tweeter PEQ 5 Frequency
+    tweeter_peq_5_gain:
+      name: Tweeter PEQ 5 Gain
+    tweeter_peq_5_q:
+      name: Tweeter PEQ 5 Q
+    tweeter_peq_6_frequency:
+      name: Tweeter PEQ 6 Frequency
+    tweeter_peq_6_gain:
+      name: Tweeter PEQ 6 Gain
+    tweeter_peq_6_q:
+      name: Tweeter PEQ 6 Q
     mid_peq_1_frequency:
       name: Mid PEQ 1 Frequency
     mid_peq_1_gain:
@@ -246,6 +286,30 @@ number:
       name: Mid PEQ 2 Gain
     mid_peq_2_q:
       name: Mid PEQ 2 Q
+    mid_peq_3_frequency:
+      name: Mid PEQ 3 Frequency
+    mid_peq_3_gain:
+      name: Mid PEQ 3 Gain
+    mid_peq_3_q:
+      name: Mid PEQ 3 Q
+    mid_peq_4_frequency:
+      name: Mid PEQ 4 Frequency
+    mid_peq_4_gain:
+      name: Mid PEQ 4 Gain
+    mid_peq_4_q:
+      name: Mid PEQ 4 Q
+    mid_peq_5_frequency:
+      name: Mid PEQ 5 Frequency
+    mid_peq_5_gain:
+      name: Mid PEQ 5 Gain
+    mid_peq_5_q:
+      name: Mid PEQ 5 Q
+    mid_peq_6_frequency:
+      name: Mid PEQ 6 Frequency
+    mid_peq_6_gain:
+      name: Mid PEQ 6 Gain
+    mid_peq_6_q:
+      name: Mid PEQ 6 Q
 
 switch:
   - platform: tas58xx
